@@ -41,6 +41,9 @@ turn_max = 0.95
 # in-place spin speed multiplier when stopped and turning
 turn_in_place_speed = 0.7 * max_speed
 
+# scale applied to turning when the car is moving (0..1). 1 -> full turn, 0.5 -> half effect
+moving_turn_scale = 0.9
+
 # If motor B is wired reversed relative to A, set True
 invert_B = True
 
@@ -91,7 +94,7 @@ def update_motors_from_state():
     else:
         ts = 0.0
 
-    # If stopped and turning requested -> spin in place
+    # If stopped and turning requested -> spin in place (pivot)
     if base_speed <= 0.0001 and abs(ts) > 0.01:
         spin_speed = turn_in_place_speed * abs(ts)
         if ts > 0:  # pivot left: left backward, right forward
@@ -100,7 +103,6 @@ def update_motors_from_state():
         else:       # pivot right
             dirA = True
             dirB = False
-        # apply directions (with inversion for B)
         motorA_in1.on() if dirA else motorA_in1.off()
         motorA_in2.off() if dirA else motorA_in2.on()
         eff_dir_B = (dirB != invert_B)
@@ -110,25 +112,24 @@ def update_motors_from_state():
         motorB_pwm.value = spin_speed
         return
 
-    # Moving or coasting: apply differential by reducing the inner wheel
-    # inner wheel reduction = abs(ts); outer wheel remains at base_speed
+    # Moving or coasting: apply differential by reducing the inner wheel.
+    # When moving, apply moving_turn_scale so A/D while W/S adjust differential proportionally.
+    scale = moving_turn_scale if base_speed > 0.0001 else 1.0
+
     left_multiplier = 1.0
     right_multiplier = 1.0
     if ts > 0:  # left turn -> reduce left wheel
-        left_multiplier = max(0.0, 1.0 - ts)
+        left_multiplier = max(0.0, 1.0 - ts * scale)
     elif ts < 0:  # right turn -> reduce right wheel
-        right_multiplier = max(0.0, 1.0 - abs(ts))
+        right_multiplier = max(0.0, 1.0 - abs(ts) * scale)
 
     # Compute per-motor speeds and directions
     speedA = base_speed * left_multiplier
     speedB = base_speed * right_multiplier
 
-    # Apply directions: both same as base_direction when moving
     dirA = True if base_direction >= 0 else False
     dirB = True if base_direction >= 0 else False
 
-    # If base_direction == 0, ensure motors are stopped (handled earlier)
-    # Write outputs with consideration for invert_B
     motorA_in1.on() if dirA else motorA_in1.off()
     motorA_in2.off() if dirA else motorA_in2.on()
 
