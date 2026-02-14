@@ -1,0 +1,15 @@
+{
+    "name": "Robot Web Control",
+    "dockerFile": "Dockerfile",
+    "context": "..",
+    "appPort": [
+        5000
+    ],
+    "settings": {
+        "python.pythonPath": "/usr/local/bin/python"
+    },
+    "extensions": [
+        "ms-python.python"
+    ],
+    "postCreateCommand": "pip install -r requirements.txt"
+}
