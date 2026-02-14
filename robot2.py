@@ -13,6 +13,18 @@ motorA_pwm = PWMLED(12)  # ENA
 motorB_pwm = PWMLED(13)  # ENB
 
 # ----------------------------
+# Car states
+# ----------------------------
+STATE_STANDING = 1
+STATE_MOVING = 2
+STATE_DECELERATING = 3
+STATE_TURN_IN_PLACE = 4
+STATE_TURN_WHILE_MOVING = 5
+STATE_BRAKE = 6
+
+state = STATE_STANDING
+
+# ----------------------------
 # Car state (refactored)
 # ----------------------------
 base_speed = 0.0         # common target speed (0..max_speed)
@@ -53,6 +65,8 @@ brake_active = False
 # key timing to detect release (allow OS key-repeat gaps)
 last_key_time = 0.0
 release_delay = 0.18  # seconds
+key_check_interval = 0.03
+eps = 1e-4
 
 # ----------------------------
 # Key handling helpers
@@ -66,7 +80,6 @@ def get_pressed_key(timeout=0.05):
 
 def apply_brake():
     """Apply fast braking (short both motor inputs to stop quickly) and zero PWM."""
-    # hard brake: set PWM to 0 and set both inputs same to actively brake motors
     motorA_pwm.value = 0
     motorB_pwm.value = 0
     # short the motor terminals (both inputs high) - effective brake on many drivers
@@ -77,11 +90,10 @@ def apply_brake():
 
 def update_motors_from_state():
     """Set GPIO outputs according to base_direction, base_speed and turning accumulators.
-       This function respects invert_B."""
-    global base_speed, base_direction, turn_left, turn_right
+       This function respects invert_B and uses current state to decide pivot vs moving."""
+    global base_speed, base_direction, turn_left, turn_right, state
 
-    # If braking is active, leave pins in braking state elsewhere
-    if brake_active:
+    if state == STATE_BRAKE or brake_active:
         apply_brake()
         return
 
@@ -89,8 +101,8 @@ def update_motors_from_state():
     turn_strength = turn_left - turn_right
     ts = max(-turn_max, min(turn_max, turn_strength))
 
-    # If stopped and turning requested -> spin in place (pivot)
-    if base_speed <= 0.0001 and abs(ts) > 0.01:
+    # Pivot when in-place turning state or when speed ~ 0 and significant turn requested
+    if (state == STATE_TURN_IN_PLACE) or (base_speed <= eps and abs(ts) > 0.01):
         spin_speed = turn_in_place_speed * abs(ts)
         if ts > 0:  # pivot left: left backward, right forward
             dirA = False
@@ -109,19 +121,16 @@ def update_motors_from_state():
 
     # Moving or coasting: apply differential smoothly by reducing inner wheel and
     # slightly boosting outer wheel so the car keeps forward momentum while turning.
-    scale = moving_turn_scale if base_speed > 0.0001 else 1.0
+    scale = moving_turn_scale if base_speed > eps else 1.0
 
-    # default both wheels follow base_speed
     left_speed = base_speed
     right_speed = base_speed
 
     if ts > 0.01:
-        # left turn: reduce left, slightly boost right
         reduction = ts * scale
         left_speed = max(0.0, base_speed * (1.0 - reduction))
         right_speed = min(max_speed, base_speed * (1.0 + reduction * 0.25))
     elif ts < -0.01:
-        # right turn: reduce right, slightly boost left
         reduction = abs(ts) * scale
         right_speed = max(0.0, base_speed * (1.0 - reduction))
         left_speed = min(max_speed, base_speed * (1.0 + reduction * 0.25))
@@ -148,93 +157,189 @@ old_settings = termios.tcgetattr(fd)
 tty.setcbreak(fd)
 
 try:
-    print("Hold WASD to drive, release to slow down, SPACE to brake (holds), Q to quit")
+    print("States: 1=standing 2=moving 3=decelerating 4=turn_in_place 5=turn_while_moving 6=brake")
+    print("Hold WASD to drive, SPACE to brake (holds), Q to quit")
     pressed_keys = set()
 
     while True:
         now = time.time()
-        key = get_pressed_key(timeout=0.05)
+        key = get_pressed_key(timeout=0.03)
         if key:
             last_key_time = now
-            # handle quit immediately
             if key == 'q':
                 break
-            # brake overrides everything and is applied immediately and held
             if key == ' ':
+                # immediate hard brake, overrides everything
                 brake_active = True
-                # zero base speed immediately
+                state = STATE_BRAKE
                 base_speed = 0.0
                 base_direction = 0
-                # reset turn accumulators optionally keep them so user can resume turning
+                turn_left = 0.0
+                turn_right = 0.0
                 apply_brake()
                 pressed_keys.clear()
-                # continue loop so brake is applied now
+                # remain in brake until movement key pressed
                 continue
-            # other keys add to pressed set
             pressed_keys.add(key)
         else:
-            # If no input for a short time assume release of held keys
             if now - last_key_time > release_delay:
                 pressed_keys.clear()
 
-        # If brake is active, wait until a movement key is pressed to release braking
+        # check keys
+        w = 'w' in pressed_keys
+        s = 's' in pressed_keys
+        a = 'a' in pressed_keys
+        d = 'd' in pressed_keys
+
+        # release brake if user requests movement
         if brake_active:
-            # if user presses movement or turn keys, release brake and resume control
-            if any(k in pressed_keys for k in ('w','s','a','d')):
+            if any((w, s, a, d)):
                 brake_active = False
-                # restore motor pins according to new state below
-                # fall through to rest of loop
+                # after brake release, set to standing and let loop transition
+                state = STATE_STANDING
             else:
                 apply_brake()
-                time.sleep(0.02)
+                time.sleep(key_check_interval)
                 continue
 
-        # ----------------------------
-        # Handle forward/backward (W/S)
-        # start slowly and keep speeding up while key held; decelerate on release
-        if 'w' in pressed_keys:
-            # forward
-            if base_speed <= 0.0001:
-                base_speed = min_torque
-                startup_counter = startup_boost_steps
-            elif startup_counter > 0:
-                base_speed = min(max_speed, base_speed + startup_boost_increment)
-                startup_counter -= 1
+        # STATE DECISION
+        # Priority: turning in place if standing and A/D pressed
+        if (not w and not s) and (a or d) and base_speed <= eps:
+            state = STATE_TURN_IN_PLACE
+        # If moving or decelerating and A/D pressed -> turning while moving
+        elif (a or d) and base_speed > eps:
+            state = STATE_TURN_WHILE_MOVING
+        # Movement keys without turning -> moving
+        elif (w or s) and not (a or d):
+            state = STATE_MOVING
+        # No movement keys -> if moving, decelerate, else standing
+        elif not (w or s or a or d):
+            if base_speed > eps:
+                state = STATE_DECELERATING
             else:
-                base_speed = min(max_speed, base_speed + acceleration)
-            base_direction = 1
-        elif 's' in pressed_keys:
-            # backward
-            if base_speed <= 0.0001:
-                base_speed = min_torque
-                startup_counter = startup_boost_steps
-            elif startup_counter > 0:
-                base_speed = min(max_speed, base_speed + startup_boost_increment)
-                startup_counter -= 1
-            else:
-                base_speed = min(max_speed, base_speed + acceleration)
-            base_direction = -1
+                state = STATE_STANDING
         else:
-            # no forward/back key: slow down
+            # fallback keep previous state
+            pass
+
+        # STATE BEHAVIOR
+        if state == STATE_MOVING:
+            # W / S accelerate while held, no turning active
+            if w:
+                # forward
+                if base_speed <= eps:
+                    base_speed = min_torque
+                    startup_counter = startup_boost_steps
+                elif startup_counter > 0:
+                    base_speed = min(max_speed, base_speed + startup_boost_increment)
+                    startup_counter -= 1
+                else:
+                    base_speed = min(max_speed, base_speed + acceleration)
+                base_direction = 1
+            elif s:
+                # backward
+                if base_speed <= eps:
+                    base_speed = min_torque
+                    startup_counter = startup_boost_steps
+                elif startup_counter > 0:
+                    base_speed = min(max_speed, base_speed + startup_boost_increment)
+                    startup_counter -= 1
+                else:
+                    base_speed = min(max_speed, base_speed + acceleration)
+                base_direction = -1
+
+            # decay any small turning accumulators to balance wheels
+            if not a:
+                turn_left = max(0.0, turn_left - turn_decay)
+            if not d:
+                turn_right = max(0.0, turn_right - turn_decay)
+
+        elif state == STATE_TURN_WHILE_MOVING:
+            # keep moving forward/back while building turn accumulators
+            if w:
+                if base_speed <= eps:
+                    base_speed = min_torque
+                    startup_counter = startup_boost_steps
+                elif startup_counter > 0:
+                    base_speed = min(max_speed, base_speed + startup_boost_increment)
+                    startup_counter -= 1
+                else:
+                    base_speed = min(max_speed, base_speed + acceleration)
+                base_direction = 1
+            elif s:
+                if base_speed <= eps:
+                    base_speed = min_torque
+                    startup_counter = startup_boost_steps
+                elif startup_counter > 0:
+                    base_speed = min(max_speed, base_speed + startup_boost_increment)
+                    startup_counter -= 1
+                else:
+                    base_speed = min(max_speed, base_speed + acceleration)
+                base_direction = -1
+
+            # accumulate turning strength while held
+            if a and not d:
+                turn_left = min(turn_max, turn_left + turn_increment)
+            else:
+                turn_left = max(0.0, turn_left - turn_decay)
+            if d and not a:
+                turn_right = min(turn_max, turn_right + turn_increment)
+            else:
+                turn_right = max(0.0, turn_right - turn_decay)
+
+        elif state == STATE_DECELERATING:
+            # slow down gracefully and allow small turning inputs to nudge
             startup_counter = 0
             base_speed = max(0.0, base_speed - deceleration)
-            if base_speed <= 0.0001:
+            if base_speed <= eps:
                 base_speed = 0.0
                 base_direction = 0
 
-        # ----------------------------
-        # Handle turning accumulators (A/D)
-        if 'a' in pressed_keys and 'd' not in pressed_keys:
-            turn_left = min(turn_max, turn_left + turn_increment)
-        else:
+            if a and base_speed > eps:
+                state = STATE_TURN_WHILE_MOVING
+                turn_left = min(turn_max, turn_left + turn_increment)
+            else:
+                turn_left = max(0.0, turn_left - turn_decay)
+
+            if d and base_speed > eps:
+                state = STATE_TURN_WHILE_MOVING
+                turn_right = min(turn_max, turn_right + turn_increment)
+            else:
+                turn_right = max(0.0, turn_right - turn_decay)
+
+        elif state == STATE_TURN_IN_PLACE:
+            # ensure base speed is zero and build turn accumulator
+            base_speed = 0.0
+            base_direction = 0
+            if a and not d:
+                turn_left = min(turn_max, turn_left + turn_increment)
+            else:
+                turn_left = max(0.0, turn_left - turn_decay)
+            if d and not a:
+                turn_right = min(turn_max, turn_right + turn_increment)
+            else:
+                turn_right = max(0.0, turn_right - turn_decay)
+
+            # if both released, decay to standing
+            if turn_left <= 0.0 and turn_right <= 0.0:
+                state = STATE_STANDING
+
+        elif state == STATE_STANDING:
+            # no motion; decay turning to zero
+            base_speed = 0.0
+            base_direction = 0
             turn_left = max(0.0, turn_left - turn_decay)
-
-        if 'd' in pressed_keys and 'a' not in pressed_keys:
-            turn_right = min(turn_max, turn_right + turn_increment)
-        else:
             turn_right = max(0.0, turn_right - turn_decay)
+            if turn_left <= 0.0 and turn_right <= 0.0:
+                turn_left = 0.0
+                turn_right = 0.0
 
-        # small deadzone
+        elif state == STATE_BRAKE:
+            apply_brake()
+            time.sleep(key_check_interval)
+            continue
+
+        # small deadzone cleanup
         if turn_left < 0.01:
             turn_left = 0.0
         if turn_right < 0.01:
@@ -242,7 +347,7 @@ try:
 
         # Update GPIOs from computed state
         update_motors_from_state()
-        time.sleep(0.03)
+        time.sleep(key_check_interval)
 
 except KeyboardInterrupt:
     pass
