@@ -95,13 +95,32 @@ try:
             speed_B = max(0, speed_B - deceleration)
 
         # ----------------------------
-        # Handle turning (continuous while held)
+        # Handle turning:
+        # - If W or S are held -> gentle turn by reducing one motor
+        # - If neither W nor S held -> pivot turn in place for tight turns
+        turn_in_place_speed = 0.6 * max_speed
+
         if 'a' in pressed_keys:
-            # Reduce left motor to turn left
-            speed_A = max(0, speed_A * 0.5)
+            if not ('w' in pressed_keys or 's' in pressed_keys):
+                # Pivot left: left backward, right forward at fixed turning speed
+                direction_A = False
+                direction_B = True
+                speed_A = turn_in_place_speed
+                speed_B = turn_in_place_speed
+            else:
+                # Gentle left while moving: reduce left motor
+                speed_A = max(0, speed_A * 0.5)
+
         if 'd' in pressed_keys:
-            # Reduce right motor to turn right
-            speed_B = max(0, speed_B * 0.5)
+            if not ('w' in pressed_keys or 's' in pressed_keys):
+                # Pivot right: left forward, right backward at fixed turning speed
+                direction_A = True
+                direction_B = False
+                speed_A = turn_in_place_speed
+                speed_B = turn_in_place_speed
+            else:
+                # Gentle right while moving: reduce right motor
+                speed_B = max(0, speed_B * 0.5)
 
         update_motors()
         time.sleep(0.05)
