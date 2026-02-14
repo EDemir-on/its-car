@@ -18,10 +18,15 @@ motorB_pwm = PWMLED(13)  # ENB
 speed_A = 0.0
 speed_B = 0.0
 # initial torque to overcome stiction, then ramp up more slowly
-min_torque = 0.18     # initial PWM to get motors moving
-acceleration = 0.01   # slower speed increase per loop
+min_torque = 0.35     # raised initial PWM to get motors moving immediately
+acceleration = 0.01   # steady ramp after startup
 deceleration = 0.01   # speed decrease per loop
 max_speed = 1.0
+
+# short startup boost (applied over a few loops) to avoid long delay before motion
+startup_boost_steps = 4
+startup_boost_increment = 0.08
+startup_counter = 0
 
 direction_A = True  # True=forward, False=backward
 direction_B = True
@@ -84,24 +89,36 @@ try:
         if 'w' in pressed_keys:
             direction_A = True
             direction_B = True
-            # start with a stronger initial torque if stopped, then ramp slowly
+            # When starting from rest, give an immediate torque and a short boost
             if speed_A == 0 and speed_B == 0:
                 speed_A = min_torque
                 speed_B = min_torque
+                startup_counter = startup_boost_steps
+            elif startup_counter > 0:
+                speed_A = min(max_speed, speed_A + startup_boost_increment)
+                speed_B = min(max_speed, speed_B + startup_boost_increment)
+                startup_counter -= 1
             else:
                 speed_A = min(max_speed, speed_A + acceleration)
                 speed_B = min(max_speed, speed_B + acceleration)
         elif 's' in pressed_keys:
             direction_A = False
             direction_B = False
-            # start with a stronger initial torque when reversing, then ramp slowly
+            # When starting from rest to reverse, give immediate torque and a short boost
             if speed_A == 0 and speed_B == 0:
                 speed_A = min_torque
                 speed_B = min_torque
+                startup_counter = startup_boost_steps
+            elif startup_counter > 0:
+                speed_A = min(max_speed, speed_A + startup_boost_increment)
+                speed_B = min(max_speed, speed_B + startup_boost_increment)
+                startup_counter -= 1
             else:
                 speed_A = min(max_speed, speed_A + acceleration)
                 speed_B = min(max_speed, speed_B + acceleration)
         else:
+            # stop any pending startup boost when no W/S held
+            startup_counter = 0
             # Gradual slow down
             speed_A = max(0, speed_A - deceleration)
             speed_B = max(0, speed_B - deceleration)
