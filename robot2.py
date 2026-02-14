@@ -64,9 +64,15 @@ brake_active = False
 
 # key timing to detect release (allow OS key-repeat gaps)
 last_key_time = 0.0
-release_delay = 0.18  # seconds
+release_delay = 0.25  # slightly increased
 key_check_interval = 0.03
 eps = 1e-4
+
+# track last-seen timestamps per key instead of clearing the whole set
+last_seen = {}  # key -> timestamp
+
+def is_pressed(k, now):
+    return (k in last_seen) and (now - last_seen[k] <= release_delay)
 
 # ----------------------------
 # Key handling helpers
@@ -166,6 +172,7 @@ try:
         key = get_pressed_key(timeout=0.03)
         if key:
             last_key_time = now
+            last_seen[key] = now              # record last-seen timestamp
             if key == 'q':
                 break
             if key == ' ':
@@ -177,25 +184,23 @@ try:
                 turn_left = 0.0
                 turn_right = 0.0
                 apply_brake()
-                pressed_keys.clear()
-                # remain in brake until movement key pressed
+                # clear timestamps so no stale presses remain
+                last_seen.clear()
                 continue
-            pressed_keys.add(key)
         else:
-            if now - last_key_time > release_delay:
-                pressed_keys.clear()
+            # don't clear last_seen here; timestamps expire naturally via is_pressed()
+            pass
 
-        # check keys
-        w = 'w' in pressed_keys
-        s = 's' in pressed_keys
-        a = 'a' in pressed_keys
-        d = 'd' in pressed_keys
+        # check keys using timestamps
+        w = is_pressed('w', now)
+        s = is_pressed('s', now)
+        a = is_pressed('a', now)
+        d = is_pressed('d', now)
 
         # release brake if user requests movement
         if brake_active:
             if any((w, s, a, d)):
                 brake_active = False
-                # after brake release, set to standing and let loop transition
                 state = STATE_STANDING
             else:
                 apply_brake()
