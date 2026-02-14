@@ -13,6 +13,9 @@ _current_cmd = None
 _worker_thread = None
 _worker_stop = threading.Event()
 
+# default PWM for high-level commands
+DEFAULT_SPEED = 0.6
+
 # ----------------------------
 # Motor pins
 # ----------------------------
@@ -34,12 +37,26 @@ def _worker():
         except queue.Empty:
             continue
         _current_cmd = cmd
-        # Process command: replace this block with real motor control calls.
-        log.info("EXECUTE COMMAND: %s", cmd)
-        # Simulate short processing time / state change
-        # For real hardware, call your motor control functions here.
-        time.sleep(0.02)
-        _cmd_q.task_done()
+        try:
+            log.info("EXECUTE COMMAND: %s", cmd)
+            # call the appropriate motor helper (these are defined later in this file)
+            if cmd == 'forward':
+                move_forward(DEFAULT_SPEED)
+            elif cmd in ('back', 'backward', 'reverse'):
+                move_backward(DEFAULT_SPEED)
+            elif cmd == 'left':
+                turn_left(DEFAULT_SPEED)
+            elif cmd == 'right':
+                turn_right(DEFAULT_SPEED)
+            elif cmd == 'stop':
+                stop()
+            else:
+                log.warning("unknown command in worker: %s", cmd)
+            # do not auto-stop here — leave motors in commanded state until next command
+        except Exception:
+            log.exception("error executing command: %s", cmd)
+        finally:
+            _cmd_q.task_done()
     log.info("robot worker stopped")
 
 def move(direction: str):
