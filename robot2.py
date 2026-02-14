@@ -24,6 +24,9 @@ max_speed = 1.0
 direction_A = True  # True=forward, False=backward
 direction_B = True
 
+# If motor B is wired reversed relative to A, set True
+invert_B = True
+
 # ----------------------------
 # Key handling helpers
 # ----------------------------
@@ -37,8 +40,12 @@ def get_pressed_key(timeout=0.05):
 def update_motors():
     motorA_in1.on() if direction_A else motorA_in1.off()
     motorA_in2.off() if direction_A else motorA_in2.on()
-    motorB_in3.on() if direction_B else motorB_in3.off()
-    motorB_in4.off() if direction_B else motorB_in4.on()
+
+    # apply inversion for motor B if wiring is flipped
+    eff_dir_B = (direction_B != invert_B)
+    motorB_in3.on() if eff_dir_B else motorB_in3.off()
+    motorB_in4.off() if eff_dir_B else motorB_in4.on()
+
     motorA_pwm.value = speed_A
     motorB_pwm.value = speed_B
 
@@ -62,12 +69,13 @@ try:
                 speed_A = 0
                 speed_B = 0
                 update_motors()
+                pressed_keys.clear()
                 continue
             else:
                 pressed_keys.add(key)
-
-        # Remove keys that are no longer pressed
-        # (simplified: we just accelerate if key pressed, otherwise decelerate)
+        else:
+            # No key available this loop -> treat as key release
+            pressed_keys.clear()
 
         # ----------------------------
         # Handle forward/backward
@@ -87,16 +95,15 @@ try:
             speed_B = max(0, speed_B - deceleration)
 
         # ----------------------------
-        # Handle turning
+        # Handle turning (continuous while held)
         if 'a' in pressed_keys:
-            # Slow left motor for left turn
-            speed_A = max(0, speed_A - acceleration/2)
+            # Reduce left motor to turn left
+            speed_A = max(0, speed_A * 0.5)
         if 'd' in pressed_keys:
-            # Slow right motor for right turn
-            speed_B = max(0, speed_B - acceleration/2)
+            # Reduce right motor to turn right
+            speed_B = max(0, speed_B * 0.5)
 
         update_motors()
-        pressed_keys.clear()  # reset each loop
         time.sleep(0.05)
 
 except KeyboardInterrupt:
