@@ -37,16 +37,6 @@ def _call_robot_move(direction):
         return getattr(robot, 'stop')()
     raise AttributeError("no matching robot function for: " + d)
 
-def _handle_move(direction):
-    direction = (direction or '').lower()
-    app.logger.info("move request: %s", direction)
-    try:
-        result = _call_robot_move(direction)
-        return {'status': 'success', 'direction': direction, 'result': result}
-    except Exception as e:
-        app.logger.exception("robot move failed")
-        return {'status': 'error', 'message': str(e)}, 500
-
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -67,6 +57,34 @@ def move():
 @app.route('/move/<direction>', methods=['POST', 'GET'])
 def move_with_path(direction):
     return _handle_move(direction)
+
+@app.route('/status', methods=['GET'])
+def status():
+    """Return robot.get_status() if available for debugging"""
+    try:
+        if hasattr(robot, 'get_status'):
+            return {'status': 'ok', 'robot': robot.get_status()}
+        return {'status': 'ok', 'robot': 'no get_status() available'}
+    except Exception:
+        app.logger.exception("failed to get robot status")
+        return {'status': 'error', 'message': 'failed to get robot status'}, 500
+
+def _handle_move(direction):
+    direction = (direction or '').lower()
+    app.logger.info("move request: %s", direction)
+    try:
+        result = _call_robot_move(direction)
+        # attempt to include robot::get_status for debugging
+        robot_status = None
+        try:
+            robot_status = robot.get_status() if hasattr(robot, 'get_status') else None
+        except Exception:
+            app.logger.exception("robot.get_status() raised")
+        app.logger.info("move result=%s status=%s", result, robot_status)
+        return {'status': 'success', 'direction': direction, 'result': result, 'robot_status': robot_status}
+    except Exception as e:
+        app.logger.exception("robot move failed")
+        return {'status': 'error', 'message': str(e)}, 500
 
 if __name__ == '__main__':
     # Ensure you run this file from the src/ directory so local robot.py is importable:
