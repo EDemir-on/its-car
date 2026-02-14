@@ -17,8 +17,10 @@ motorB_pwm = PWMLED(13)  # ENB
 # ----------------------------
 speed_A = 0.0
 speed_B = 0.0
-acceleration = 0.02  # speed increase per loop
-deceleration = 0.01  # speed decrease per loop
+# initial torque to overcome stiction, then ramp up more slowly
+min_torque = 0.18     # initial PWM to get motors moving
+acceleration = 0.01   # slower speed increase per loop
+deceleration = 0.01   # speed decrease per loop
 max_speed = 1.0
 
 direction_A = True  # True=forward, False=backward
@@ -82,13 +84,23 @@ try:
         if 'w' in pressed_keys:
             direction_A = True
             direction_B = True
-            speed_A = min(max_speed, speed_A + acceleration)
-            speed_B = min(max_speed, speed_B + acceleration)
+            # start with a stronger initial torque if stopped, then ramp slowly
+            if speed_A == 0 and speed_B == 0:
+                speed_A = min_torque
+                speed_B = min_torque
+            else:
+                speed_A = min(max_speed, speed_A + acceleration)
+                speed_B = min(max_speed, speed_B + acceleration)
         elif 's' in pressed_keys:
             direction_A = False
             direction_B = False
-            speed_A = min(max_speed, speed_A + acceleration)
-            speed_B = min(max_speed, speed_B + acceleration)
+            # start with a stronger initial torque when reversing, then ramp slowly
+            if speed_A == 0 and speed_B == 0:
+                speed_A = min_torque
+                speed_B = min_torque
+            else:
+                speed_A = min(max_speed, speed_A + acceleration)
+                speed_B = min(max_speed, speed_B + acceleration)
         else:
             # Gradual slow down
             speed_A = max(0, speed_A - deceleration)
