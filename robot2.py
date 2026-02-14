@@ -87,12 +87,7 @@ def update_motors_from_state():
 
     # Calculate effective turning strength (-1..1): positive => left turn
     turn_strength = turn_left - turn_right
-    if turn_strength > 0.0:
-        ts = min(turn_strength, turn_max)
-    elif turn_strength < 0.0:
-        ts = max(turn_strength, -turn_max)
-    else:
-        ts = 0.0
+    ts = max(-turn_max, min(turn_max, turn_strength))
 
     # If stopped and turning requested -> spin in place (pivot)
     if base_speed <= 0.0001 and abs(ts) > 0.01:
@@ -112,21 +107,26 @@ def update_motors_from_state():
         motorB_pwm.value = spin_speed
         return
 
-    # Moving or coasting: apply differential by reducing the inner wheel.
-    # When moving, apply moving_turn_scale so A/D while W/S adjust differential proportionally.
+    # Moving or coasting: apply differential smoothly by reducing inner wheel and
+    # slightly boosting outer wheel so the car keeps forward momentum while turning.
     scale = moving_turn_scale if base_speed > 0.0001 else 1.0
 
-    left_multiplier = 1.0
-    right_multiplier = 1.0
-    if ts > 0:  # left turn -> reduce left wheel
-        left_multiplier = max(0.0, 1.0 - ts * scale)
-    elif ts < 0:  # right turn -> reduce right wheel
-        right_multiplier = max(0.0, 1.0 - abs(ts) * scale)
+    # default both wheels follow base_speed
+    left_speed = base_speed
+    right_speed = base_speed
 
-    # Compute per-motor speeds and directions
-    speedA = base_speed * left_multiplier
-    speedB = base_speed * right_multiplier
+    if ts > 0.01:
+        # left turn: reduce left, slightly boost right
+        reduction = ts * scale
+        left_speed = max(0.0, base_speed * (1.0 - reduction))
+        right_speed = min(max_speed, base_speed * (1.0 + reduction * 0.25))
+    elif ts < -0.01:
+        # right turn: reduce right, slightly boost left
+        reduction = abs(ts) * scale
+        right_speed = max(0.0, base_speed * (1.0 - reduction))
+        left_speed = min(max_speed, base_speed * (1.0 + reduction * 0.25))
 
+    # Apply directions: both same as base_direction when moving
     dirA = True if base_direction >= 0 else False
     dirB = True if base_direction >= 0 else False
 
@@ -137,8 +137,8 @@ def update_motors_from_state():
     motorB_in3.on() if eff_dir_B else motorB_in3.off()
     motorB_in4.off() if eff_dir_B else motorB_in4.on()
 
-    motorA_pwm.value = speedA
-    motorB_pwm.value = speedB
+    motorA_pwm.value = left_speed
+    motorB_pwm.value = right_speed
 
 # ----------------------------
 # Initialize terminal
