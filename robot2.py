@@ -45,12 +45,12 @@ startup_counter = 0
 
 turn_left = 0.0
 turn_right = 0.0
-turn_increment = 0.18    # increased: faster turn buildup while moving
-turn_decay = 0.05        # decreased: slower decay so turn persists longer
+turn_increment = 0.25    # faster buildup for stronger turns
+turn_decay = 0.04        # slightly faster decay
 turn_max = 0.95
 
-turn_in_place_speed = 0.7 * max_speed
-moving_turn_scale = 0.85
+turn_in_place_speed = 0.8 * max_speed  # increased from 0.7
+moving_turn_scale = 1.0   # changed from 0.85 — full turn effect while moving
 
 invert_B = True
 brake_active = False
@@ -109,20 +109,22 @@ def update_motors_from_state():
         log.debug("pivot: speed=%.2f ts=%.2f", spin_speed, ts)
         return
 
-    # Moving: apply differential by reducing/boosting wheels
+    # Moving: apply differential smoothly — reduce inner wheel but keep outer wheel strong
     scale = moving_turn_scale if base_speed > eps else 1.0
 
     left_speed = base_speed
     right_speed = base_speed
 
     if ts > 0.01:
-        reduction = ts * scale
-        left_speed = max(0.0, base_speed * (1.0 - reduction))
-        right_speed = min(max_speed, base_speed * (1.0 + reduction * 0.15))
+        # left turn: reduce left, keep right at or slightly above base_speed
+        reduction = ts * scale * 0.6  # gentler reduction so car doesn't lose momentum
+        left_speed = max(0.1 * base_speed, base_speed * (1.0 - reduction))
+        right_speed = base_speed  # keep right wheel at full speed
     elif ts < -0.01:
-        reduction = abs(ts) * scale
-        right_speed = max(0.0, base_speed * (1.0 - reduction))
-        left_speed = min(max_speed, base_speed * (1.0 + reduction * 0.15))
+        # right turn: reduce right, keep left at or slightly above base_speed
+        reduction = abs(ts) * scale * 0.6
+        right_speed = max(0.1 * base_speed, base_speed * (1.0 - reduction))
+        left_speed = base_speed  # keep left wheel at full speed
 
     dirA = True if base_direction >= 0 else False
     dirB = True if base_direction >= 0 else False
