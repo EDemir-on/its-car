@@ -45,8 +45,8 @@ startup_counter = 0
 
 turn_left = 0.0
 turn_right = 0.0
-turn_increment = 0.12    # faster turn buildup
-turn_decay = 0.08        # faster turn decay
+turn_increment = 0.18    # increased: faster turn buildup while moving
+turn_decay = 0.05        # decreased: slower decay so turn persists longer
 turn_max = 0.95
 
 turn_in_place_speed = 0.7 * max_speed
@@ -265,13 +265,16 @@ try:
                     base_speed = min(max_speed, base_speed + acceleration)
                 base_direction = -1
 
-            # Build turn accumulators quickly while held
-            if a and not d:
+            # Build turn accumulators ONLY while key is held; decay only on release
+            if a:
                 turn_left = min(turn_max, turn_left + turn_increment)
+                turn_right = max(0.0, turn_right - turn_decay * 2)  # kill right turn if left pressed
             else:
                 turn_left = max(0.0, turn_left - turn_decay)
-            if d and not a:
+            
+            if d:
                 turn_right = min(turn_max, turn_right + turn_increment)
+                turn_left = max(0.0, turn_left - turn_decay * 2)  # kill left turn if right pressed
             else:
                 turn_right = max(0.0, turn_right - turn_decay)
 
