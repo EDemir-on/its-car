@@ -58,8 +58,10 @@ brake_active = False
 key_check_interval = 0.02
 eps = 1e-4
 
-# Key state tracker (True = currently held)
+# Key state tracker with timestamps
 key_state = {'w': False, 's': False, 'a': False, 'd': False}
+key_last_seen = {'w': 0.0, 's': 0.0, 'a': 0.0, 'd': 0.0}
+key_timeout = 0.15  # if no repeat in 0.15s, treat as released
 
 def get_pressed_key(timeout=0.01):
     """Check if key pressed, return key or None"""
@@ -174,7 +176,14 @@ try:
                 log.info("BRAKE engaged")
             elif key in key_state:
                 key_state[key] = True
+                key_last_seen[key] = now
                 log.debug("key down: %s", key)
+
+        # Timeout keys if no repeat received (terminal key-repeat gap)
+        for key in key_state:
+            if key_state[key] and (now - key_last_seen[key]) > key_timeout:
+                key_state[key] = False
+                log.debug("key timeout (released): %s", key)
 
         w = key_state['w']
         s = key_state['s']
