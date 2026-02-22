@@ -11,6 +11,7 @@ from dataclasses import dataclass
 KEY_TIMEOUT = 0.18
 THROTTLE_HOLD_WINDOW = 0.60
 TURN_THROTTLE_GRACE = 0.80
+TURN_RELEASE_GRACE = 0.40
 IDLE_THROTTLE_CLEAR = 1.20
 LOOP_DT = 0.02
 
@@ -103,6 +104,7 @@ def main():
     last_throttle_seen = 0.0
     last_throttle_direction = 0
     direction_block_until = 0.0
+    last_turn_seen = 0.0
 
     last_state = None
     last_print = 0.0
@@ -148,6 +150,8 @@ def main():
             s = key_active(key_state, key_last_seen, "s", now, THROTTLE_HOLD_WINDOW)
             a = key_active(key_state, key_last_seen, "a", now, 0.0)
             d = key_active(key_state, key_last_seen, "d", now, 0.0)
+            if a or d:
+                last_turn_seen = now
 
             if brake_latch:
                 current_state = "BRAKE_LATCHED"
@@ -177,7 +181,10 @@ def main():
 
             if (
                 throttle_raw == 0
-                and (a or d)
+                and (
+                    (a or d)
+                    or ((now - last_turn_seen) <= TURN_RELEASE_GRACE)
+                )
                 and last_throttle_direction != 0
             ):
                 throttle_direction = last_throttle_direction

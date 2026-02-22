@@ -23,6 +23,7 @@ control_dt = 0.02
 key_timeout = 0.18
 throttle_hold_window = 0.60
 turn_throttle_grace = 0.80
+turn_release_grace = 0.40
 idle_throttle_clear = 1.20
 deadband = 1e-4
 
@@ -51,6 +52,7 @@ active_level_index = 0
 last_drive_direction = 0
 last_throttle_seen = 0.0
 last_throttle_direction = 0
+last_turn_seen = 0.0
 
 
 def clamp(value, low, high):
@@ -211,6 +213,8 @@ try:
         s = key_active("s", now, throttle_hold_window)
         a = key_active("a", now)
         d = key_active("d", now)
+        if a or d:
+            last_turn_seen = now
 
         # Brake latch: require releasing all drive keys before any new motion.
         if brake_latch:
@@ -238,7 +242,10 @@ try:
         # keep moving-turn mode instead of dropping to pivot.
         if (
             throttle_direction_raw == 0
-            and (a or d)
+            and (
+                (a or d)
+                or ((now - last_turn_seen) <= turn_release_grace)
+            )
             and last_throttle_direction != 0
         ):
             throttle_direction = last_throttle_direction
