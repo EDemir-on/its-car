@@ -22,6 +22,7 @@ invert_B = True
 control_dt = 0.02
 key_timeout = 0.18
 throttle_hold_window = 0.30
+turn_throttle_grace = 0.80
 deadband = 1e-4
 
 # Throttle-hold speed levels (PWM)
@@ -46,6 +47,8 @@ hold_direction = 0   # 1=forward, -1=backward, 0=idle
 hold_start_time = 0.0
 active_level_index = 0
 last_drive_direction = 0
+last_throttle_seen = 0.0
+last_throttle_direction = 0
 
 
 def clamp(value, low, high):
@@ -124,10 +127,10 @@ def update_speed_level(now):
     return speed_levels[active_level_index]
 
 
-def resolve_motion_command(w, s, a, d, base_pwm):
+def resolve_motion_command(throttle_direction, a, d, base_pwm):
     # Returns signed wheel commands in [-1, 1].
-    moving_forward = w and not s
-    moving_backward = s and not w
+    moving_forward = throttle_direction > 0
+    moving_backward = throttle_direction < 0
     throttle_active = moving_forward or moving_backward
     turn_left = a and not d
     turn_right = d and not a
@@ -226,11 +229,28 @@ try:
 
         # Determine throttle direction.
         if w and not s:
-            throttle_direction = 1
+            throttle_direction_raw = 1
         elif s and not w:
-            throttle_direction = -1
+            throttle_direction_raw = -1
         else:
-            throttle_direction = 0
+            throttle_direction_raw = 0
+
+        if throttle_direction_raw != 0:
+            last_throttle_seen = now
+            last_throttle_direction = throttle_direction_raw
+
+        # Keep moving-turn behavior when throttle repeats are momentarily missed.
+        if (
+            throttle_direction_raw == 0
+            and (a or d)
+            and last_throttle_direction != 0
+            and (now - last_throttle_seen) <= turn_throttle_grace
+        ):
+            throttle_direction = last_throttle_direction
+        else:
+            throttle_direction = throttle_direction_raw
+            if throttle_direction == 0:
+                last_throttle_direction = 0
 
         # Speed level logic.
         if throttle_direction == 0:
@@ -244,7 +264,9 @@ try:
             base_pwm = update_speed_level(now)
 
         # Resolve wheel commands based on control table.
-        left_cmd, right_cmd, drive_direction = resolve_motion_command(w, s, a, d, base_pwm)
+        left_cmd, right_cmd, drive_direction = resolve_motion_command(
+            throttle_direction, a, d, base_pwm
+        )
 
         # Safety: delay on forward<->reverse changes.
         opposite_change = (
