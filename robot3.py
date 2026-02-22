@@ -28,7 +28,7 @@ brake_rate = 2.30
 
 turn_accel = 3.00
 turn_decay = 4.00
-turn_mix = 0.65
+turn_yield = 0.90
 pivot_speed = 0.80
 
 deadband = 0.02
@@ -114,9 +114,34 @@ def signed_to_dir_pwm(value):
     return direction_forward, clamp(pwm, 0.0, 1.0)
 
 
-def apply_drive(linear_cmd, turn_cmd):
-    # Pivot when almost stationary and turning; otherwise blend turn into differential drive.
-    if abs(linear_cmd) < deadband and abs(turn_cmd) >= deadband:
+def apply_drive(linear_cmd, turn_cmd, throttle_target):
+    throttle_active = abs(throttle_target) > 0.0
+
+    # Mode 1: moving turn by yielding one side (no side reversal while throttling).
+    if throttle_active:
+        moving_forward = throttle_target > 0.0
+        base = max(abs(linear_cmd), deadband)
+        turn_amount = clamp(abs(turn_cmd), 0.0, 1.0)
+        inner_scale = clamp(1.0 - (turn_yield * turn_amount), 0.0, 1.0)
+        outer = base
+        inner = base * inner_scale
+
+        if turn_cmd > deadband:  # right turn: right side yields
+            left = outer
+            right = inner
+        elif turn_cmd < -deadband:  # left turn: left side yields
+            left = inner
+            right = outer
+        else:
+            left = base
+            right = base
+
+        sign = 1.0 if moving_forward else -1.0
+        left *= sign
+        right *= sign
+
+    # Mode 2: in-place pivot only when no throttle is active.
+    elif abs(turn_cmd) >= deadband:
         spin = pivot_speed * abs(turn_cmd)
         if turn_cmd > 0.0:  # right pivot
             left = spin
@@ -125,8 +150,8 @@ def apply_drive(linear_cmd, turn_cmd):
             left = -spin
             right = spin
     else:
-        left = clamp(linear_cmd + turn_mix * turn_cmd, -1.0, 1.0)
-        right = clamp(linear_cmd - turn_mix * turn_cmd, -1.0, 1.0)
+        left = 0.0
+        right = 0.0
 
     left_dir, left_pwm = signed_to_dir_pwm(left)
     right_dir, right_pwm = signed_to_dir_pwm(right)
@@ -236,7 +261,7 @@ try:
         if abs(current_turn) < deadband:
             current_turn = 0.0
 
-        apply_drive(current_speed, current_turn)
+        apply_drive(current_speed, current_turn, throttle_target)
         time.sleep(control_dt)
 
 except KeyboardInterrupt:
