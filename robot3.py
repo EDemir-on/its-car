@@ -22,6 +22,7 @@ invert_B = True
 control_dt = 0.02
 key_timeout = 0.18
 throttle_hold_window = 0.30
+turn_throttle_grace = 0.80
 deadband = 1e-4
 
 # Throttle-hold speed levels (PWM)
@@ -29,7 +30,8 @@ speed_levels = [0.38, 0.62, 0.92]  # L1, L2, L3
 level_step_seconds = 2.0
 
 # Turning
-turn_yield_ratio = 0.45  # inner wheel speed = base * ratio when turning while moving
+# Matched to the simple test script feel (outer~0.65, inner~0.35).
+turn_yield_ratio = 0.54  # inner wheel speed = base * ratio when turning while moving
 pivot_pwm = 0.68
 
 # Safety
@@ -46,6 +48,8 @@ hold_direction = 0   # 1=forward, -1=backward, 0=idle
 hold_start_time = 0.0
 active_level_index = 0
 last_drive_direction = 0
+last_throttle_seen = 0.0
+last_throttle_direction = 0
 
 
 def clamp(value, low, high):
@@ -124,10 +128,10 @@ def update_speed_level(now):
     return speed_levels[active_level_index]
 
 
-def resolve_motion_command(w, s, a, d, base_pwm):
+def resolve_motion_command(throttle_direction, a, d, base_pwm):
     # Returns signed wheel commands in [-1, 1].
-    moving_forward = w and not s
-    moving_backward = s and not w
+    moving_forward = throttle_direction > 0
+    moving_backward = throttle_direction < 0
     throttle_active = moving_forward or moving_backward
     turn_left = a and not d
     turn_right = d and not a
@@ -138,21 +142,13 @@ def resolve_motion_command(w, s, a, d, base_pwm):
         outer = base_pwm
         inner = base_pwm * turn_yield_ratio
 
+        # Fixed differential steering: slow wheel on turn side.
         if turn_left:
-            # Reverse steering flips which side yields to keep intuitive left/right control.
-            if moving_forward:
-                left = inner
-                right = outer
-            else:
-                left = outer
-                right = inner
+            left = inner
+            right = outer
         elif turn_right:
-            if moving_forward:
-                left = outer
-                right = inner
-            else:
-                left = inner
-                right = outer
+            left = outer
+            right = inner
         else:
             left = outer
             right = outer
@@ -226,11 +222,28 @@ try:
 
         # Determine throttle direction.
         if w and not s:
-            throttle_direction = 1
+            throttle_direction_raw = 1
         elif s and not w:
-            throttle_direction = -1
+            throttle_direction_raw = -1
         else:
-            throttle_direction = 0
+            throttle_direction_raw = 0
+
+        if throttle_direction_raw != 0:
+            last_throttle_seen = now
+            last_throttle_direction = throttle_direction_raw
+
+        # Prevent accidental pivot from missed key-repeat while turning.
+        if (
+            throttle_direction_raw == 0
+            and (a or d)
+            and last_throttle_direction != 0
+            and (now - last_throttle_seen) <= turn_throttle_grace
+        ):
+            throttle_direction = last_throttle_direction
+        else:
+            throttle_direction = throttle_direction_raw
+            if throttle_direction == 0:
+                last_throttle_direction = 0
 
         # Speed level logic.
         if throttle_direction == 0:
@@ -244,7 +257,9 @@ try:
             base_pwm = update_speed_level(now)
 
         # Resolve wheel commands based on control table.
-        left_cmd, right_cmd, drive_direction = resolve_motion_command(w, s, a, d, base_pwm)
+        left_cmd, right_cmd, drive_direction = resolve_motion_command(
+            throttle_direction, a, d, base_pwm
+        )
 
         # Safety: delay on forward<->reverse changes.
         opposite_change = (
