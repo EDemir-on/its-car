@@ -14,51 +14,49 @@ motorA_in1 = DigitalOutputDevice(17)
 motorA_in2 = DigitalOutputDevice(27)
 motorB_in3 = DigitalOutputDevice(22)
 motorB_in4 = DigitalOutputDevice(23)
-
 motorA_pwm = PWMLED(12)
 motorB_pwm = PWMLED(13)
 
-# Tunables
-max_speed = 1.0
-min_pwm = 0.30
-
-accel_rate = 1.20
-decel_rate = 1.60
-brake_rate = 2.30
-
-turn_accel = 3.00
-turn_decay = 4.00
-turn_yield = 0.90
-pivot_speed = 0.80
-
-deadband = 0.02
-control_dt = 0.02
-
+# Wiring/motor parameters
 invert_B = True
+control_dt = 0.02
+key_timeout = 0.18
+throttle_hold_window = 0.30
+deadband = 1e-4
 
-# Key handling
+# Throttle-hold speed levels (PWM)
+speed_levels = [0.38, 0.62, 0.92]  # L1, L2, L3
+level_step_seconds = 2.0
+
+# Turning
+turn_yield_ratio = 0.45  # inner wheel speed = base * ratio when turning while moving
+pivot_pwm = 0.68
+
+# Safety
+direction_change_delay = 0.20
+brake_latch = False
+direction_block_until = 0.0
+
+# Key state
 key_state = {"w": False, "s": False, "a": False, "d": False}
 key_last_seen = {"w": 0.0, "s": 0.0, "a": 0.0, "d": 0.0}
-key_timeout = 0.15
-# Keep throttle intent alive briefly between keyboard repeat events.
-throttle_hold_window = 0.30
 
-# Control state
-current_speed = 0.0  # -1..1, signed
-current_turn = 0.0   # -1..1, signed (left negative, right positive)
-brake_active = False
+# Throttle hold state
+hold_direction = 0   # 1=forward, -1=backward, 0=idle
+hold_start_time = 0.0
+active_level_index = 0
+last_drive_direction = 0
 
 
 def clamp(value, low, high):
     return max(low, min(high, value))
 
 
-def move_toward(current, target, step):
-    if current < target:
-        return min(target, current + step)
-    if current > target:
-        return max(target, current - step)
-    return current
+def get_pressed_key(timeout=0.01):
+    dr, _, _ = select.select([sys.stdin], [], [], timeout)
+    if dr:
+        return sys.stdin.read(1).lower()
+    return None
 
 
 def key_active(key, now, hold_window=0.0):
@@ -69,24 +67,31 @@ def key_active(key, now, hold_window=0.0):
     return (now - key_last_seen[key]) <= hold_window
 
 
-def get_pressed_key(timeout=0.01):
-    dr, _, _ = select.select([sys.stdin], [], [], timeout)
-    if dr:
-        return sys.stdin.read(1).lower()
-    return None
+def set_motor_direction(left_forward, right_forward):
+    motorA_in1.on() if left_forward else motorA_in1.off()
+    motorA_in2.off() if left_forward else motorA_in2.on()
+
+    effective_right_forward = (right_forward != invert_B)
+    motorB_in3.on() if effective_right_forward else motorB_in3.off()
+    motorB_in4.off() if effective_right_forward else motorB_in4.on()
 
 
-def apply_brake():
-    # Dynamic brake by shorting both motor terminals.
-    motorA_pwm.value = 0.0
-    motorB_pwm.value = 0.0
-    motorA_in1.on()
-    motorA_in2.on()
-    motorB_in3.on()
-    motorB_in4.on()
+def command_motor_signed(left_cmd, right_cmd):
+    left_cmd = clamp(left_cmd, -1.0, 1.0)
+    right_cmd = clamp(right_cmd, -1.0, 1.0)
+
+    if abs(left_cmd) < deadband and abs(right_cmd) < deadband:
+        stop_motors()
+        return
+
+    left_forward = left_cmd >= 0.0
+    right_forward = right_cmd >= 0.0
+    set_motor_direction(left_forward, right_forward)
+    motorA_pwm.value = abs(left_cmd)
+    motorB_pwm.value = abs(right_cmd)
 
 
-def stop_motors_coast():
+def stop_motors():
     motorA_pwm.value = 0.0
     motorB_pwm.value = 0.0
     motorA_in1.off()
@@ -95,73 +100,82 @@ def stop_motors_coast():
     motorB_in4.off()
 
 
-def set_motor_direction(left_forward, right_forward):
-    motorA_in1.on() if left_forward else motorA_in1.off()
-    motorA_in2.off() if left_forward else motorA_in2.on()
-
-    eff_right_forward = (right_forward != invert_B)
-    motorB_in3.on() if eff_right_forward else motorB_in3.off()
-    motorB_in4.off() if eff_right_forward else motorB_in4.on()
-
-
-def signed_to_dir_pwm(value):
-    # Convert signed command to motor direction + magnitude with startup floor.
-    if abs(value) < deadband:
-        return True, 0.0
-    direction_forward = value > 0.0
-    magnitude = abs(value)
-    pwm = min_pwm + (1.0 - min_pwm) * magnitude
-    return direction_forward, clamp(pwm, 0.0, 1.0)
+def apply_brake():
+    # Dynamic brake for immediate stop.
+    motorA_pwm.value = 0.0
+    motorB_pwm.value = 0.0
+    motorA_in1.on()
+    motorA_in2.on()
+    motorB_in3.on()
+    motorB_in4.on()
 
 
-def apply_drive(linear_cmd, turn_cmd, throttle_target):
-    throttle_active = abs(throttle_target) > 0.0
+def reset_speed_level(now):
+    global hold_start_time, active_level_index
+    hold_start_time = now
+    active_level_index = 0
 
-    # Mode 1: moving turn by yielding one side (no side reversal while throttling).
+
+def update_speed_level(now):
+    global active_level_index
+    elapsed = max(0.0, now - hold_start_time)
+    computed_index = int(elapsed // level_step_seconds)
+    active_level_index = min(len(speed_levels) - 1, computed_index)
+    return speed_levels[active_level_index]
+
+
+def resolve_motion_command(w, s, a, d, base_pwm):
+    # Returns signed wheel commands in [-1, 1].
+    moving_forward = w and not s
+    moving_backward = s and not w
+    throttle_active = moving_forward or moving_backward
+    turn_left = a and not d
+    turn_right = d and not a
+
+    # Movement with differential-yield turn.
     if throttle_active:
-        moving_forward = throttle_target > 0.0
-        base = max(abs(linear_cmd), deadband)
-        turn_amount = clamp(abs(turn_cmd), 0.0, 1.0)
-        inner_scale = clamp(1.0 - (turn_yield * turn_amount), 0.0, 1.0)
-        outer = base
-        inner = base * inner_scale
-
-        if turn_cmd > deadband:  # right turn: right side yields
-            left = outer
-            right = inner
-        elif turn_cmd < -deadband:  # left turn: left side yields
-            left = inner
-            right = outer
-        else:
-            left = base
-            right = base
-
         sign = 1.0 if moving_forward else -1.0
-        left *= sign
-        right *= sign
+        outer = base_pwm
+        inner = base_pwm * turn_yield_ratio
 
-    # Mode 2: in-place pivot only when no throttle is active.
-    elif abs(turn_cmd) >= deadband:
-        spin = pivot_speed * abs(turn_cmd)
-        if turn_cmd > 0.0:  # right pivot
-            left = spin
-            right = -spin
-        else:               # left pivot
-            left = -spin
-            right = spin
-    else:
-        left = 0.0
-        right = 0.0
+        if turn_left:
+            # Reverse steering flips which side yields to keep intuitive left/right control.
+            if moving_forward:
+                left = inner
+                right = outer
+            else:
+                left = outer
+                right = inner
+        elif turn_right:
+            if moving_forward:
+                left = outer
+                right = inner
+            else:
+                left = inner
+                right = outer
+        else:
+            left = outer
+            right = outer
 
-    left_dir, left_pwm = signed_to_dir_pwm(left)
-    right_dir, right_pwm = signed_to_dir_pwm(right)
+        return left * sign, right * sign, (1 if moving_forward else -1)
 
-    set_motor_direction(left_dir, right_dir)
-    motorA_pwm.value = left_pwm
-    motorB_pwm.value = right_pwm
+    # Pivot in place.
+    if turn_left:
+        return -pivot_pwm, pivot_pwm, 0
+    if turn_right:
+        return pivot_pwm, -pivot_pwm, 0
+
+    return 0.0, 0.0, 0
 
 
-# Initialize terminal
+def release_timed_out_keys(now):
+    for key in key_state:
+        if key_state[key] and (now - key_last_seen[key]) > key_timeout:
+            key_state[key] = False
+
+
+fd = None
+old_settings = None
 try:
     fd = sys.stdin.fileno()
     old_settings = termios.tcgetattr(fd)
@@ -169,20 +183,13 @@ try:
     log.info("terminal initialized")
 except Exception as exc:
     log.error("terminal init failed: %s", exc)
-    fd = None
-    old_settings = None
-
 
 try:
-    log.info("robot3 started - WASD drive, SPACE brake hold, Q quit")
-    last_t = time.time()
-
+    log.info("robot3 started - W/S move, A/D turn, SPACE brake, Q quit")
     while True:
         now = time.time()
-        dt = clamp(now - last_t, 0.0, 0.08)
-        last_t = now
 
-        # Read all available keys
+        # Read all available keys.
         while True:
             key = get_pressed_key(timeout=0.001)
             if not key:
@@ -190,84 +197,90 @@ try:
             if key == "q":
                 raise KeyboardInterrupt()
             if key == " ":
-                brake_active = True
-                current_speed = 0.0
-                current_turn = 0.0
+                brake_latch = True
+                apply_brake()
+                hold_direction = 0
+                last_drive_direction = 0
+                reset_speed_level(now)
                 log.info("BRAKE engaged")
                 continue
             if key in key_state:
                 key_state[key] = True
                 key_last_seen[key] = now
 
-        # Release timed-out keys
-        for key in key_state:
-            if key_state[key] and (now - key_last_seen[key]) > key_timeout:
-                key_state[key] = False
+        release_timed_out_keys(now)
 
         w = key_active("w", now, throttle_hold_window)
         s = key_active("s", now, throttle_hold_window)
         a = key_active("a", now)
         d = key_active("d", now)
 
-        # Keep brake latched until movement input is received.
-        if brake_active:
-            if w or s or a or d:
-                brake_active = False
-                log.info("brake released")
-            else:
-                apply_brake()
-                time.sleep(control_dt)
-                continue
+        # Brake latch: require releasing all drive keys before any new motion.
+        if brake_latch:
+            apply_brake()
+            if not (w or s or a or d):
+                brake_latch = False
+                log.info("BRAKE released; waiting for new command")
+            time.sleep(control_dt)
+            continue
 
-        # Signed throttle command: forward=+1, backward=-1.
+        # Determine throttle direction.
         if w and not s:
-            throttle_target = 1.0
+            throttle_direction = 1
         elif s and not w:
-            throttle_target = -1.0
+            throttle_direction = -1
         else:
-            throttle_target = 0.0
+            throttle_direction = 0
 
-        # Turn target: left=-1, right=+1.
-        if d and not a:
-            turn_target = 1.0
-        elif a and not d:
-            turn_target = -1.0
+        # Speed level logic.
+        if throttle_direction == 0:
+            hold_direction = 0
+            reset_speed_level(now)
+            base_pwm = speed_levels[0]
         else:
-            turn_target = 0.0
+            if throttle_direction != hold_direction:
+                hold_direction = throttle_direction
+                reset_speed_level(now)
+            base_pwm = update_speed_level(now)
 
-        target_speed = throttle_target * max_speed
+        # Resolve wheel commands based on control table.
+        left_cmd, right_cmd, drive_direction = resolve_motion_command(w, s, a, d, base_pwm)
 
-        # Faster braking when reversing direction.
-        reversing = (target_speed * current_speed) < 0.0
-        if abs(target_speed) > abs(current_speed):
-            speed_step = accel_rate * dt
-        elif reversing:
-            speed_step = brake_rate * dt
+        # Safety: delay on forward<->reverse changes.
+        opposite_change = (
+            drive_direction != 0
+            and last_drive_direction != 0
+            and drive_direction != last_drive_direction
+        )
+        if opposite_change:
+            direction_block_until = now + direction_change_delay
+            last_drive_direction = 0
+            stop_motors()
+            time.sleep(control_dt)
+            continue
+
+        if now < direction_block_until:
+            stop_motors()
+            time.sleep(control_dt)
+            continue
+
+        # If no command, stay stopped.
+        if abs(left_cmd) < deadband and abs(right_cmd) < deadband:
+            stop_motors()
+            last_drive_direction = 0
         else:
-            speed_step = decel_rate * dt
-        current_speed = move_toward(current_speed, target_speed, speed_step)
+            command_motor_signed(left_cmd, right_cmd)
+            if drive_direction != 0:
+                last_drive_direction = drive_direction
 
-        # Turn rises quickly and decays smoothly to center.
-        if abs(turn_target) > abs(current_turn):
-            turn_step = turn_accel * dt
-        else:
-            turn_step = turn_decay * dt
-        current_turn = move_toward(current_turn, turn_target, turn_step)
-        current_turn = clamp(current_turn, -1.0, 1.0)
-
-        # Zero tiny residuals.
-        if abs(current_speed) < deadband:
-            current_speed = 0.0
-        if abs(current_turn) < deadband:
-            current_turn = 0.0
-
-        apply_drive(current_speed, current_turn, throttle_target)
         time.sleep(control_dt)
 
 except KeyboardInterrupt:
     pass
 finally:
-    stop_motors_coast()
-    if old_settings and fd:
+    stop_motors()
+    hold_direction = 0
+    active_level_index = 0
+    if old_settings is not None and fd is not None:
         termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     log.info("robot3 exited safely")
