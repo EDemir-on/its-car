@@ -11,6 +11,7 @@ from dataclasses import dataclass
 KEY_TIMEOUT = 0.18
 THROTTLE_HOLD_WINDOW = 0.30
 TURN_THROTTLE_GRACE = 0.80
+IDLE_THROTTLE_CLEAR = 1.20
 LOOP_DT = 0.02
 
 # Speed levels (normalized PWM)
@@ -183,7 +184,11 @@ def main():
                 throttle_direction = last_throttle_direction
             else:
                 throttle_direction = throttle_raw
-                if throttle_direction == 0:
+                if (
+                    throttle_direction == 0
+                    and not (a or d)
+                    and (now - last_throttle_seen) > IDLE_THROTTLE_CLEAR
+                ):
                     last_throttle_direction = 0
 
             if throttle_direction == 0:

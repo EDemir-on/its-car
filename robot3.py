@@ -23,6 +23,7 @@ control_dt = 0.02
 key_timeout = 0.18
 throttle_hold_window = 0.30
 turn_throttle_grace = 0.80
+idle_throttle_clear = 1.20
 deadband = 1e-4
 
 # Throttle-hold speed levels (PWM)
@@ -242,7 +243,12 @@ try:
             throttle_direction = last_throttle_direction
         else:
             throttle_direction = throttle_direction_raw
-            if throttle_direction == 0:
+            # Clear throttle memory only after sustained true idle.
+            if (
+                throttle_direction == 0
+                and not (a or d)
+                and (now - last_throttle_seen) > idle_throttle_clear
+            ):
                 last_throttle_direction = 0
 
         # Speed level logic.
