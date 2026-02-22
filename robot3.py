@@ -40,6 +40,8 @@ invert_B = True
 key_state = {"w": False, "s": False, "a": False, "d": False}
 key_last_seen = {"w": 0.0, "s": 0.0, "a": 0.0, "d": 0.0}
 key_timeout = 0.15
+# Keep throttle intent alive briefly between keyboard repeat events.
+throttle_hold_window = 0.30
 
 # Control state
 current_speed = 0.0  # -1..1, signed
@@ -57,6 +59,14 @@ def move_toward(current, target, step):
     if current > target:
         return max(target, current - step)
     return current
+
+
+def key_active(key, now, hold_window=0.0):
+    if key_state[key]:
+        return True
+    if hold_window <= 0.0:
+        return False
+    return (now - key_last_seen[key]) <= hold_window
 
 
 def get_pressed_key(timeout=0.01):
@@ -169,10 +179,10 @@ try:
             if key_state[key] and (now - key_last_seen[key]) > key_timeout:
                 key_state[key] = False
 
-        w = key_state["w"]
-        s = key_state["s"]
-        a = key_state["a"]
-        d = key_state["d"]
+        w = key_active("w", now, throttle_hold_window)
+        s = key_active("s", now, throttle_hold_window)
+        a = key_active("a", now)
+        d = key_active("d", now)
 
         # Keep brake latched until movement input is received.
         if brake_active:
