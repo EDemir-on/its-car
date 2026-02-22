@@ -21,7 +21,7 @@ motorB_pwm = PWMLED(13)
 invert_B = True
 control_dt = 0.02
 key_timeout = 0.18
-throttle_hold_window = 0.30
+throttle_hold_window = 0.60
 turn_throttle_grace = 0.80
 idle_throttle_clear = 1.20
 deadband = 1e-4
@@ -234,11 +234,12 @@ try:
             last_throttle_direction = throttle_direction_raw
 
         # Prevent accidental pivot from missed key-repeat while turning.
+        # If a turn key is active and we still remember a throttle direction,
+        # keep moving-turn mode instead of dropping to pivot.
         if (
             throttle_direction_raw == 0
             and (a or d)
             and last_throttle_direction != 0
-            and (now - last_throttle_seen) <= turn_throttle_grace
         ):
             throttle_direction = last_throttle_direction
         else:

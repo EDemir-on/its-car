@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 # Key timing
 KEY_TIMEOUT = 0.18
-THROTTLE_HOLD_WINDOW = 0.30
+THROTTLE_HOLD_WINDOW = 0.60
 TURN_THROTTLE_GRACE = 0.80
 IDLE_THROTTLE_CLEAR = 1.20
 LOOP_DT = 0.02
@@ -179,7 +179,6 @@ def main():
                 throttle_raw == 0
                 and (a or d)
                 and last_throttle_direction != 0
-                and (now - last_throttle_seen) <= TURN_THROTTLE_GRACE
             ):
                 throttle_direction = last_throttle_direction
             else:
