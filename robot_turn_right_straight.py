@@ -13,7 +13,7 @@ invert_B = True
 
 # Fixed drive values (no input, no speed levels)
 left_pwm = 0.65
-right_pwm = 0.35
+right_pwm = 0.15
 
 
 def set_motor_direction(left_forward, right_forward):
