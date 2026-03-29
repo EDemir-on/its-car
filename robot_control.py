@@ -116,7 +116,7 @@ class RobotControllerThread:
             self._stop_motors()
     
     def _update_state_machine(self, dt):
-        """Update motors using explicit state machine"""
+        """Update motors using explicit state machine - SIMPLIFIED"""
         try:
             # Check for emergency brake
             if self.input_handler.is_brake_pressed():
@@ -125,102 +125,83 @@ class RobotControllerThread:
                 return
             
             key_state = self.input_handler.get_key_state()
-            w_pressed = key_state.get('w', False)
-            s_pressed = key_state.get('s', False)
-            a_pressed = key_state.get('a', False)
-            d_pressed = key_state.get('d', False)
+            w = key_state.get('w', False)
+            s = key_state.get('s', False)
+            a = key_state.get('a', False)
+            d = key_state.get('d', False)
             
-            # Resolve conflicting inputs
-            forward_intent = w_pressed and not s_pressed
-            backward_intent = s_pressed and not w_pressed
-            left_intent = a_pressed and not d_pressed
-            right_intent = d_pressed and not a_pressed
-            
-            # Get current velocity magnitude
+            # Get current velocity
             velocity = max(abs(self.current_speed_A), abs(self.current_speed_B))
             
-            # STATE MACHINE
-            if self.current_state == self.STATE_IDLE:
-                if forward_intent:
-                    self.current_state = self.STATE_ACCELERATING
-                    self._accelerate(self.max_speed_forward, dt)
-                elif backward_intent:
-                    self.current_state = self.STATE_ACCELERATING
-                    self._accelerate(-self.max_speed_backward, dt)
-                elif left_intent or right_intent:
-                    self.current_state = self.STATE_STATIONARY_TURN
-                    self._stationary_turn(left_intent, dt)
-                else:
-                    self._apply_motor_speeds(0, 0)
+            # Simple state machine
+            # Priority: W/S > A/D for determining intent
             
-            elif self.current_state == self.STATE_ACCELERATING:
-                if not forward_intent and not backward_intent:
-                    # Released movement key - transition to Coasting
-                    self.current_state = self.STATE_COASTING
-                elif (left_intent or right_intent):
-                    # Add turning while accelerating - transition to Moving Turn
+            if w and not s:
+                # FORWARD
+                if a and not d:
+                    # Forward + Left = curved turn
+                    target = self.max_speed_forward
+                    self._accelerate(target, dt)
+                    # Apply turn reduction to left motor
+                    self.current_speed_A *= self.turn_reduction
+                    self._apply_motor_speeds(self.current_speed_A, self.current_speed_B)
                     self.current_state = self.STATE_MOVING_TURN
-                
-                # Continue accelerating
-                if forward_intent:
-                    self._accelerate(self.max_speed_forward, dt)
-                elif backward_intent:
-                    self._accelerate(-self.max_speed_backward, dt)
+                elif d and not a:
+                    # Forward + Right = curved turn
+                    target = self.max_speed_forward
+                    self._accelerate(target, dt)
+                    # Apply turn reduction to right motor
+                    self.current_speed_B *= self.turn_reduction
+                    self._apply_motor_speeds(self.current_speed_A, self.current_speed_B)
+                    self.current_state = self.STATE_MOVING_TURN
                 else:
-                    # This shouldn't happen, but handle it
-                    self.current_state = self.STATE_COASTING
-            
-            elif self.current_state == self.STATE_MOVING_TURN:
-                if not forward_intent and not backward_intent:
-                    # Movement key released
-                    self.current_state = self.STATE_COASTING
-                elif not (left_intent or right_intent):
-                    # Turn key released but still accelerating
-                    self.current_state = self.STATE_ACCELERATING
-                
-                # Update position
-                if forward_intent:
+                    # Forward straight
                     self._accelerate(self.max_speed_forward, dt)
-                    if left_intent:
-                        self._apply_turn_reduction('left')
-                    elif right_intent:
-                        self._apply_turn_reduction('right')
-                elif backward_intent:
-                    self._accelerate(-self.max_speed_backward, dt)
-                    if left_intent:
-                        self._apply_turn_reduction('left')
-                    elif right_intent:
-                        self._apply_turn_reduction('right')
-            
-            elif self.current_state == self.STATE_COASTING:
-                if velocity < 0.05:
-                    # Stopped - transition to Idle
-                    self.current_state = self.STATE_IDLE
-                    self._apply_motor_speeds(0, 0)
-                elif forward_intent or backward_intent:
-                    # Accelerate again
                     self.current_state = self.STATE_ACCELERATING
-                elif left_intent or right_intent:
-                    # Start turning while coasting
+            
+            elif s and not w:
+                # BACKWARD
+                if a and not d:
+                    # Backward + Left = curved turn
+                    target = -self.max_speed_backward
+                    self._accelerate(target, dt)
+                    # Apply turn reduction to left motor
+                    self.current_speed_A *= self.turn_reduction
+                    self._apply_motor_speeds(self.current_speed_A, self.current_speed_B)
+                    self.current_state = self.STATE_MOVING_TURN
+                elif d and not a:
+                    # Backward + Right = curved turn
+                    target = -self.max_speed_backward
+                    self._accelerate(target, dt)
+                    # Apply turn reduction to right motor
+                    self.current_speed_B *= self.turn_reduction
+                    self._apply_motor_speeds(self.current_speed_A, self.current_speed_B)
+                    self.current_state = self.STATE_MOVING_TURN
+                else:
+                    # Backward straight
+                    self._accelerate(-self.max_speed_backward, dt)
+                    self.current_state = self.STATE_ACCELERATING
+            
+            else:
+                # NO FORWARD/BACKWARD
+                if a and not d:
+                    # LEFT TURN ONLY
                     self.current_state = self.STATE_STATIONARY_TURN
+                    self._apply_motor_speeds(-self.stationary_turn_speed, self.stationary_turn_speed)
+                elif d and not a:
+                    # RIGHT TURN ONLY
+                    self.current_state = self.STATE_STATIONARY_TURN
+                    self._apply_motor_speeds(self.stationary_turn_speed, -self.stationary_turn_speed)
                 else:
-                    # Continue coasting - decelerate
-                    self._decelerate(dt)
-            
-            elif self.current_state == self.STATE_STATIONARY_TURN:
-                if not (left_intent or right_intent):
-                    # Released turn key
+                    # NO INPUT - COAST/IDLE
                     if velocity < 0.05:
+                        # Stopped
                         self.current_state = self.STATE_IDLE
                         self._apply_motor_speeds(0, 0)
                     else:
+                        # Coasting
                         self.current_state = self.STATE_COASTING
-                elif forward_intent or backward_intent:
-                    # Started moving while turning
-                    self.current_state = self.STATE_MOVING_TURN
-                else:
-                    # Continue stationary turn
-                    self._stationary_turn(left_intent, dt)
+                        self._decelerate(dt)
         
         except Exception as e:
             log.error(f"State machine error: {e}", exc_info=True)
@@ -270,16 +251,6 @@ class RobotControllerThread:
         
         self._apply_motor_speeds(self.current_speed_A, self.current_speed_B)
     
-    def _stationary_turn(self, left_intent, dt):
-        """Rotate in place"""
-        if left_intent:
-            target_speed_A = -self.stationary_turn_speed
-            target_speed_B = self.stationary_turn_speed
-        else:  # right_intent
-            target_speed_A = self.stationary_turn_speed
-            target_speed_B = -self.stationary_turn_speed
-        
-        self._apply_motor_speeds(target_speed_A, target_speed_B)
     
     def _update_motors_from_queue(self, dt):
         """Update motors from command queue (backward compatibility)"""
