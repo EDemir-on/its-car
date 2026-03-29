@@ -16,7 +16,7 @@ log = logging.getLogger("input_handler")
 
 
 class InputHandler:
-    """Thread that reads keyboard input without blocking main control"""
+    """Thread that reads keyboard input and maintains key state"""
     
     def __init__(self):
         self.command_queue = None
@@ -24,10 +24,19 @@ class InputHandler:
         self.input_thread = None
         self.fd = None
         self.old_settings = None
+        self.lock = threading.Lock()
+        # Track which keys are currently pressed
+        self.keys_pressed = {'w': False, 's': False, 'a': False, 'd': False}
+        self.quit_requested = False
     
     def set_command_queue(self, queue):
         """Set the command queue to send commands to"""
         self.command_queue = queue
+    
+    def get_key_state(self):
+        """Get current state of all keys"""
+        with self.lock:
+            return dict(self.keys_pressed)
     
     def start(self):
         """Start the input handler thread"""
@@ -68,7 +77,7 @@ class InputHandler:
         log.info("Input handler thread stopped")
     
     def _input_loop(self):
-        """Monitor keyboard input and queue commands"""
+        """Monitor keyboard input and track key state"""
         try:
             log.info("Input handler ready: WASD=move, SPACE=brake, Q=quit")
             
@@ -83,20 +92,40 @@ class InputHandler:
                     
                     key = sys.stdin.read(1).lower()
                     
-                    if key == 'w':
-                        self.command_queue.put(RobotCommand('forward', speed=0.7))
-                    elif key == 's':
-                        self.command_queue.put(RobotCommand('backward', speed=0.7))
-                    elif key == 'a':
-                        self.command_queue.put(RobotCommand('left', speed=0.6))
-                    elif key == 'd':
-                        self.command_queue.put(RobotCommand('right', speed=0.6))
-                    elif key == ' ':
-                        self.command_queue.put(RobotCommand('brake', speed=0.6))
-                    elif key == 'q':
-                        log.info("Quit command received")
-                        self.running = False
-                        break
+                    with self.lock:
+                        if key == 'w':
+                            self.keys_pressed['w'] = True
+                            if self.command_queue:
+                                self.command_queue.put(RobotCommand('key_state_change'))
+                        elif key == 's':
+                            self.keys_pressed['s'] = True
+                            if self.command_queue:
+                                self.command_queue.put(RobotCommand('key_state_change'))
+                        elif key == 'a':
+                            self.keys_pressed['a'] = True
+                            if self.command_queue:
+                                self.command_queue.put(RobotCommand('key_state_change'))
+                        elif key == 'd':
+                            self.keys_pressed['d'] = True
+                            if self.command_queue:
+                                self.command_queue.put(RobotCommand('key_state_change'))
+                        elif key == ' ':
+                            if self.command_queue:
+                                self.command_queue.put(RobotCommand('brake', speed=0.6))
+                            # Release all movement keys on brake
+                            self.keys_pressed['w'] = False
+                            self.keys_pressed['s'] = False
+                            self.keys_pressed['a'] = False
+                            self.keys_pressed['d'] = False
+                        elif key == 'q':
+                            log.info("Quit command received")
+                            self.quit_requested = True
+                            self.running = False
+                            break
+                        
+                        # Handle key release (when user lifts finger, we detect the next key)
+                        # This is a limitation of terminal input - we can't detect releases
+                        # The control loop will handle timeout-based release
                     
                 except Exception as e:
                     log.error(f"Input read error: {e}")
