@@ -42,7 +42,7 @@ class RobotCommand:
 
 
 class RobotControllerThread:
-    """Thread-safe robot controller with state-based control and smooth motion"""
+    """Thread-safe robot controller with realistic vehicle dynamics"""
     
     def __init__(self, command_queue, input_handler=None, poll_interval=0.02):
         self.command_queue = command_queue
@@ -52,17 +52,25 @@ class RobotControllerThread:
         self.lock = threading.Lock()
         
         # Motor state
-        self.current_speed_A = 0
-        self.current_speed_B = 0
+        self.current_speed_A = 0.0
+        self.current_speed_B = 0.0
         self.command_timeout = None
         self.last_command = None
         
         # Control parameters
-        self.max_speed = 0.7
+        self.max_speed_forward = 0.7
+        self.max_speed_backward = 0.5  # Slower in reverse
         self.min_pwm = 0.3  # Minimum PWM to overcome static friction
-        self.acceleration = 0.15  # Speed units per second
-        self.deceleration = 0.10  # Speed units per second
-        self.turn_blend = 0.5  # How much to reduce inner wheel during turns (0.5 = half speed)
+        self.acceleration = 0.3  # Speed units per second
+        self.deceleration = 0.2  # Speed units per second (coasting)
+        
+        # Turning parameters
+        self.stationary_turn_speed = 0.4  # Speed for in-place turning
+        self.turn_blend_factor = 0.6  # How much to reduce inner wheel during turns
+        # Speed-dependent turning: at lower speeds, turn more sharply
+        self.turn_sharpness_min = 0.5  # At low speeds, reduce to 50% of outer wheel
+        self.turn_sharpness_max = 0.75  # At high speeds, reduce to 75% of outer wheel
+        
         self.last_update_time = time.time()
         
     def start(self):
@@ -107,63 +115,98 @@ class RobotControllerThread:
             self._stop_motors()
     
     def _update_motors_from_state(self, dt):
-        """Update motors based on current key state (state-based control)"""
+        """Update motors based on current key state with realistic vehicle dynamics"""
         try:
+            # Check for emergency brake (SPACE)
+            if self.input_handler.is_brake_pressed():
+                self._stop_motors()
+                return
+            
             key_state = self.input_handler.get_key_state()
             
-            # Determine desired motion direction
-            forward_pressed = key_state.get('w', False)
-            backward_pressed = key_state.get('s', False)
-            left_pressed = key_state.get('a', False)
-            right_pressed = key_state.get('d', False)
+            # Read raw inputs
+            w_pressed = key_state.get('w', False)
+            s_pressed = key_state.get('s', False)
+            a_pressed = key_state.get('a', False)
+            d_pressed = key_state.get('d', False)
             
-            # Determine forward/backward intent
-            if forward_pressed and not backward_pressed:
-                desired_speed = self.max_speed
-            elif backward_pressed and not forward_pressed:
-                desired_speed = -self.max_speed
+            # Determine movement intent: W has priority over S
+            if w_pressed and s_pressed:
+                # W takes priority when both pressed
+                movement_intent = 'forward'
+                max_speed = self.max_speed_forward
+            elif w_pressed:
+                movement_intent = 'forward'
+                max_speed = self.max_speed_forward
+            elif s_pressed:
+                movement_intent = 'backward'
+                max_speed = -self.max_speed_backward
             else:
-                desired_speed = 0
+                movement_intent = 'idle'
+                max_speed = 0
             
-            # Determine turn intent (-1 = left, 0 = straight, 1 = right)
-            if left_pressed and not right_pressed:
-                turn_intent = -1
-            elif right_pressed and not left_pressed:
-                turn_intent = 1
+            # Determine steering intent: A and D cancel out
+            if a_pressed and d_pressed:
+                # Both pressed = no turn
+                turn_intent = 'straight'
+            elif a_pressed:
+                turn_intent = 'left'
+            elif d_pressed:
+                turn_intent = 'right'
             else:
-                turn_intent = 0
+                turn_intent = 'straight'
             
-            # Smooth acceleration/deceleration toward desired speed
-            speed_diff = desired_speed - self.current_speed_A
+            # Update desired speed with smooth acceleration/deceleration
+            speed_diff = max_speed - self.current_speed_A
             if abs(speed_diff) < 0.01:
+                desired_speed = max_speed
+            else:
+                if speed_diff > 0:
+                    # Accelerate
+                    accel = min(speed_diff, self.acceleration * dt)
+                    desired_speed = self.current_speed_A + accel
+                else:
+                    # Decelerate (coast)
+                    decel = min(-speed_diff, self.deceleration * dt)
+                    desired_speed = self.current_speed_A - decel
+            
+            # Calculate motor speeds based on movement and steering
+            if movement_intent == 'idle':
+                # Coasting to a stop - both motors decelerate equally
+                target_speed_A = desired_speed
+                target_speed_B = desired_speed
+            elif turn_intent == 'straight':
+                # Moving straight - both motors same speed
                 target_speed_A = desired_speed
                 target_speed_B = desired_speed
             else:
-                # Accelerate or decelerate smoothly
-                if speed_diff > 0:
-                    accel = min(speed_diff, self.acceleration * dt)
-                    target_speed_A = self.current_speed_A + accel
-                    target_speed_B = self.current_speed_A + accel
+                # Turning while moving - use curved path
+                if abs(desired_speed) > 0.05:
+                    # Moving forward/backward with turn
+                    target_speed_A = desired_speed
+                    target_speed_B = desired_speed
+                    
+                    # Calculate turn blend based on current speed
+                    # Higher speed = wider turning radius (less aggressive turn)
+                    speed_ratio = abs(desired_speed) / max(self.max_speed_forward, abs(max_speed))
+                    turn_blend = self.turn_sharpness_min + \
+                                (self.turn_sharpness_max - self.turn_sharpness_min) * speed_ratio
+                    
+                    # Apply differential for curved turn
+                    if turn_intent == 'left':
+                        # Left turn: slow left wheel
+                        target_speed_A *= turn_blend
+                    else:  # turn_intent == 'right'
+                        # Right turn: slow right wheel
+                        target_speed_B *= turn_blend
                 else:
-                    decel = min(-speed_diff, self.deceleration * dt)
-                    target_speed_A = self.current_speed_A - decel
-                    target_speed_B = self.current_speed_A - decel
-            
-            # Apply curved turns: blend forward motion with turning
-            if turn_intent != 0 and abs(target_speed_A) > 0.05:  # Only turn if moving
-                # Curved turn: reduce inner wheel speed
-                if turn_intent < 0:  # Left turn
-                    target_speed_A *= self.turn_blend  # Slow left wheel
-                else:  # Right turn
-                    target_speed_B *= self.turn_blend  # Slow right wheel
-            elif turn_intent != 0 and abs(target_speed_A) < 0.05:  # Pivot in place if not moving
-                # In-place pivot
-                if turn_intent < 0:  # Left turn
-                    target_speed_A = -self.max_speed * 0.4
-                    target_speed_B = self.max_speed * 0.4
-                else:  # Right turn
-                    target_speed_A = self.max_speed * 0.4
-                    target_speed_B = -self.max_speed * 0.4
+                    # Stationary turning (pivot in place)
+                    if turn_intent == 'left':
+                        target_speed_A = -self.stationary_turn_speed
+                        target_speed_B = self.stationary_turn_speed
+                    else:  # turn_intent == 'right'
+                        target_speed_A = self.stationary_turn_speed
+                        target_speed_B = -self.stationary_turn_speed
             
             # Apply motor commands
             self._apply_motor_speeds(target_speed_A, target_speed_B)
@@ -268,42 +311,6 @@ class RobotControllerThread:
                 motorB_in3.on()   # Inverted
                 motorB_in4.off()  # Inverted
             motorB_pwm.value = pwm_B
-        try:
-            log.debug(f"Executing: {cmd}")
-            
-            if cmd.action == 'forward':
-                self._motor_A(True, cmd.speed)
-                self._motor_B(True, cmd.speed)
-                
-            elif cmd.action == 'backward':
-                self._motor_A(False, cmd.speed)
-                self._motor_B(False, cmd.speed)
-                
-            elif cmd.action == 'left':
-                # Turn left: right wheel faster
-                self._motor_A(False, cmd.speed * 0.7)
-                self._motor_B(True, cmd.speed)
-                
-            elif cmd.action == 'right':
-                # Turn right: left wheel faster
-                self._motor_A(True, cmd.speed)
-                self._motor_B(False, cmd.speed * 0.7)
-                
-            elif cmd.action == 'stop':
-                self._stop_motors()
-                
-            elif cmd.action == 'brake':
-                self._smooth_brake(cmd.speed)
-            
-            # Set timeout for auto-stop if needed
-            if cmd.duration:
-                self.command_timeout = time.time() + cmd.duration
-            else:
-                self.command_timeout = None
-                
-        except Exception as e:
-            log.error(f"Command execution error: {e}", exc_info=True)
-            self._stop_motors()
     
     def _motor_A(self, forward=True, speed=0.5):
         """Control motor A (left)"""
@@ -375,11 +382,20 @@ class InputHandlerThread:
         # Track which keys are currently pressed
         self.keys_pressed = {'w': False, 's': False, 'a': False, 'd': False}
         self.quit_requested = False
+        self.brake_pressed = False  # SPACE bar for emergency stop
     
     def get_key_state(self):
         """Get current state of all keys"""
         with self.lock:
             return dict(self.keys_pressed)
+    
+    def is_brake_pressed(self):
+        """Check if brake (space) was pressed"""
+        with self.lock:
+            if self.brake_pressed:
+                self.brake_pressed = False  # Reset flag after reading
+                return True
+            return False
     
     def start(self):
         """Start the input handler thread"""
@@ -418,7 +434,7 @@ class InputHandlerThread:
     def _input_loop(self):
         """Monitor keyboard input and track key state"""
         try:
-            log.info("Input handler ready: WASD=move, SPACE=brake, Q=quit")
+            log.info("Input handler ready: WASD=move, SPACE=stop, Q=quit")
             
             while self.running:
                 try:
@@ -441,13 +457,12 @@ class InputHandlerThread:
                         elif key == 'd':
                             self.keys_pressed['d'] = True
                         elif key == ' ':
-                            # Release all movement keys on brake
+                            # SPACE bar: stop everything
+                            self.brake_pressed = True
                             self.keys_pressed['w'] = False
                             self.keys_pressed['s'] = False
                             self.keys_pressed['a'] = False
                             self.keys_pressed['d'] = False
-                            if self.command_queue:
-                                self.command_queue.put(RobotCommand('brake', speed=0.6))
                         elif key == 'q':
                             log.info("Quit command received")
                             self.quit_requested = True
