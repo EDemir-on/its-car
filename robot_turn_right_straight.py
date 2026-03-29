@@ -9,7 +9,7 @@ motorB_in4 = DigitalOutputDevice(23)  # Right IN4
 motorA_pwm = PWMLED(12)               # Left PWM
 motorB_pwm = PWMLED(13)               # Right PWM
 
-invert_B = True
+invert_B = False  # Motor B direction is now inverted in set_motor_direction()
 
 # Fixed drive values (no input, no speed levels)
 left_pwm = 0.65
@@ -20,9 +20,9 @@ def set_motor_direction(left_forward, right_forward):
     motorA_in1.on() if left_forward else motorA_in1.off()
     motorA_in2.off() if left_forward else motorA_in2.on()
 
-    effective_right_forward = (right_forward != invert_B)
-    motorB_in3.on() if effective_right_forward else motorB_in3.off()
-    motorB_in4.off() if effective_right_forward else motorB_in4.on()
+    # Inverted: Motor B has reversed power pins
+    motorB_in3.off() if right_forward else motorB_in3.on()
+    motorB_in4.on() if right_forward else motorB_in4.off()
 
 
 def stop_motors():

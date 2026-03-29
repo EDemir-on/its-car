@@ -143,8 +143,9 @@ class RobotControllerThread:
     def _motor_B(self, forward=True, speed=0.5):
         """Control motor B (right)"""
         with self.lock:
-            motorB_in3.on() if forward else motorB_in3.off()
-            motorB_in4.off() if forward else motorB_in4.on()
+            # Inverted: Motor B has reversed power pins
+            motorB_in3.off() if forward else motorB_in3.on()
+            motorB_in4.on() if forward else motorB_in4.off()
             self.current_speed_B = speed
             motorB_pwm.value = speed
     
