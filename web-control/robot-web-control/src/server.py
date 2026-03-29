@@ -1,41 +1,52 @@
 from flask import Flask, render_template, request
-import importlib
 import logging
 import sys
+import os
 
-import robot  # Assuming robot.py contains the robot control logic
+# Add parent directory to path to import robot modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
+
+import robot_system
 
 app = Flask(__name__)
 app.logger.setLevel(logging.INFO)
 
-# Log which robot module was loaded (helps debug wrong import / PYTHONPATH)
-app.logger.info("robot module: %s", getattr(robot, '__file__', 'unknown'))
-# Try reload to ensure latest file is used (useful during development)
+# Initialize the robot control system (without input handler for web control)
 try:
-    importlib.reload(robot)
-    app.logger.info("reloaded robot module: %s", getattr(robot, '__file__', 'unknown'))
-except Exception:
-    app.logger.exception("failed to reload robot module")
+    robot_system.initialize_robot(input_handler=None)
+    app.logger.info("Robot control system initialized")
+except Exception as e:
+    app.logger.error(f"Failed to initialize robot control: {e}")
 
 def _call_robot_move(direction):
-    """Call robot.move if present, otherwise fallback to direct functions."""
+    """Send command to robot control system"""
     d = (direction or "").strip().lower()
-    # Prefer high-level API if available
-    if hasattr(robot, 'move'):
-        return robot.move(d)
-    # Fallback mapping to low-level functions (robot.move_forward, etc.)
-    app.logger.info("robot.move not found, using fallback mapping for: %s", d)
-    if d in ('w', 'forward'):
-        return getattr(robot, 'move_forward')(0.6)
-    if d in ('s', 'back', 'reverse'):
-        return getattr(robot, 'move_backward')(0.6)
-    if d in ('a', 'left'):
-        return getattr(robot, 'turn_left')(0.6)
-    if d in ('d', 'right'):
-        return getattr(robot, 'turn_right')(0.6)
-    if d in ('stop', 'space', 'brake'):
-        return getattr(robot, 'stop')()
-    raise AttributeError("no matching robot function for: " + d)
+    
+    action_map = {
+        'w': ('forward', 0.7),
+        'forward': ('forward', 0.7),
+        's': ('backward', 0.7),
+        'back': ('backward', 0.7),
+        'reverse': ('backward', 0.7),
+        'a': ('left', 0.6),
+        'left': ('left', 0.6),
+        'd': ('right', 0.6),
+        'right': ('right', 0.6),
+        'stop': ('stop', 0),
+        'space': ('brake', 0.6),
+        'brake': ('brake', 0.6),
+    }
+    
+    if d not in action_map:
+        raise AttributeError(f"Unknown direction: {d}")
+    
+    action, speed = action_map[d]
+    success = robot_system.send_command(action, speed=speed)
+    
+    if not success:
+        raise RuntimeError(f"Failed to queue command: {action}")
+    
+    return f"Command sent: {action}"
 
 @app.route('/')
 def index():
@@ -60,26 +71,20 @@ def move_with_path(direction):
 
 @app.route('/status', methods=['GET'])
 def status():
-    """Return robot.get_status() if available for debugging"""
+    """Return robot control system status"""
     try:
-        if hasattr(robot, 'get_status'):
-            return {'status': 'ok', 'robot': robot.get_status()}
-        return {'status': 'ok', 'robot': 'no get_status() available'}
-    except Exception:
+        robot_status = robot_system.get_status()
+        return {'status': 'ok', 'robot': robot_status}
+    except Exception as e:
         app.logger.exception("failed to get robot status")
-        return {'status': 'error', 'message': 'failed to get robot status'}, 500
+        return {'status': 'error', 'message': str(e)}, 500
 
 def _handle_move(direction):
     direction = (direction or '').lower()
     app.logger.info("move request: %s", direction)
     try:
         result = _call_robot_move(direction)
-        # attempt to include robot::get_status for debugging
-        robot_status = None
-        try:
-            robot_status = robot.get_status() if hasattr(robot, 'get_status') else None
-        except Exception:
-            app.logger.exception("robot.get_status() raised")
+        robot_status = robot_system.get_status()
         app.logger.info("move result=%s status=%s", result, robot_status)
         return {'status': 'success', 'direction': direction, 'result': result, 'robot_status': robot_status}
     except Exception as e:
@@ -87,6 +92,11 @@ def _handle_move(direction):
         return {'status': 'error', 'message': str(e)}, 500
 
 if __name__ == '__main__':
-    # Ensure you run this file from the src/ directory so local robot.py is importable:
+    # Ensure you run this file from the src/ directory so local robot_system.py is importable:
     # cd /workspaces/its-car/web-control/robot-web-control/src && python3 server.py
-    app.run(host='0.0.0.0', port=8080)
+    
+    try:
+        app.run(host='0.0.0.0', port=8080)
+    finally:
+        robot_system.shutdown_robot()
+        app.logger.info("Server shutdown complete")
