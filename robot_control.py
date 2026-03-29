@@ -171,8 +171,8 @@ class RobotControllerThread:
                     desired_speed = self.current_speed_A - decel
             
             # Calculate motor speeds based on movement and steering
-            if movement_intent == 'idle':
-                # Coasting to a stop - both motors decelerate equally
+            if turn_intent == 'straight' and movement_intent == 'idle':
+                # No movement, no turning - coast to a stop
                 target_speed_A = desired_speed
                 target_speed_B = desired_speed
             elif turn_intent == 'straight':
@@ -180,9 +180,9 @@ class RobotControllerThread:
                 target_speed_A = desired_speed
                 target_speed_B = desired_speed
             else:
-                # Turning while moving - use curved path
+                # Turning (with or without movement)
                 if abs(desired_speed) > 0.05:
-                    # Moving forward/backward with turn
+                    # Moving forward/backward with curved turn
                     target_speed_A = desired_speed
                     target_speed_B = desired_speed
                     
