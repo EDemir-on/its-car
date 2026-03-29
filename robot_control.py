@@ -59,6 +59,7 @@ class RobotControllerThread:
         
         # Control parameters
         self.max_speed = 0.7
+        self.min_pwm = 0.3  # Minimum PWM to overcome static friction
         self.acceleration = 0.15  # Speed units per second
         self.deceleration = 0.10  # Speed units per second
         self.turn_blend = 0.5  # How much to reduce inner wheel during turns (0.5 = half speed)
@@ -194,6 +195,15 @@ class RobotControllerThread:
             self.current_speed_A = speed_A
             self.current_speed_B = speed_B
             
+            # Apply minimum PWM threshold - if moving, ensure minimum speed
+            pwm_A = abs(speed_A)
+            pwm_B = abs(speed_B)
+            
+            if 0 < pwm_A < self.min_pwm:
+                pwm_A = self.min_pwm
+            if 0 < pwm_B < self.min_pwm:
+                pwm_B = self.min_pwm
+            
             # Motor A
             if speed_A >= 0:
                 motorA_in1.on()
@@ -201,7 +211,7 @@ class RobotControllerThread:
             else:
                 motorA_in1.off()
                 motorA_in2.on()
-            motorA_pwm.value = abs(speed_A)
+            motorA_pwm.value = pwm_A
             
             # Motor B (with inverted direction control due to reversed power pins)
             if speed_B >= 0:
@@ -210,7 +220,7 @@ class RobotControllerThread:
             else:
                 motorB_in3.on()   # Inverted
                 motorB_in4.off()  # Inverted
-            motorB_pwm.value = abs(speed_B)
+            motorB_pwm.value = pwm_B
     
     def _decelerate_smoothly(self, dt):
         """Gradually decelerate to a stop"""
@@ -233,6 +243,15 @@ class RobotControllerThread:
             else:
                 self.current_speed_B = 0
             
+            # Apply minimum PWM threshold
+            pwm_A = abs(self.current_speed_A)
+            pwm_B = abs(self.current_speed_B)
+            
+            if 0 < pwm_A < self.min_pwm:
+                pwm_A = self.min_pwm
+            if 0 < pwm_B < self.min_pwm:
+                pwm_B = self.min_pwm
+            
             # Update motor pins
             if self.current_speed_A >= 0:
                 motorA_in1.on()
@@ -240,7 +259,7 @@ class RobotControllerThread:
             else:
                 motorA_in1.off()
                 motorA_in2.on()
-            motorA_pwm.value = abs(self.current_speed_A)
+            motorA_pwm.value = pwm_A
             
             if self.current_speed_B >= 0:
                 motorB_in3.off()  # Inverted
@@ -248,7 +267,7 @@ class RobotControllerThread:
             else:
                 motorB_in3.on()   # Inverted
                 motorB_in4.off()  # Inverted
-            motorB_pwm.value = abs(self.current_speed_B)
+            motorB_pwm.value = pwm_B
         try:
             log.debug(f"Executing: {cmd}")
             
