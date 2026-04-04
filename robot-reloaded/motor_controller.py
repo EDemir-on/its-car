@@ -12,6 +12,21 @@ logger = logging.getLogger(__name__)
 class MotorController:
     """Abstract motor controller - controls left and right wheel PWM."""
 
+    # GPIO Pin Configuration
+    # Motor A (Left)
+    MOTOR_A_IN1 = 17   # Direction control
+    MOTOR_A_IN2 = 27   # Direction control
+    MOTOR_A_PWM = 12   # Speed control (ENA)
+    
+    # Motor B (Right) - NOTE: REVERSED PINNING!
+    MOTOR_B_IN3 = 22   # Direction control (inverted)
+    MOTOR_B_IN4 = 23   # Direction control (inverted)
+    MOTOR_B_PWM = 13   # Speed control (ENB)
+    
+    # PWM Configuration
+    PWM_FREQUENCY = 1000  # Hz
+    MIN_PWM = 0.0
+
     def __init__(self, use_mock: bool = True):
         """
         Initialize motor controller.
@@ -24,6 +39,14 @@ class MotorController:
         self.right_pwm = 0.0
         self.is_stopped = True
         
+        # Hardware objects (only for non-mock mode)
+        self.motor_a_in1 = None
+        self.motor_a_in2 = None
+        self.motor_a_pwm = None
+        self.motor_b_in3 = None
+        self.motor_b_in4 = None
+        self.motor_b_pwm = None
+        
         if use_mock:
             logger.info("Motor controller initialized in MOCK mode (simulation)")
         else:
@@ -31,10 +54,31 @@ class MotorController:
             self._init_hardware()
     
     def _init_hardware(self):
-        """Initialize hardware GPIO and PWM (stub for real implementation)."""
-        # TODO: Implement actual RPi GPIO setup here
-        # Example: import RPi.GPIO as GPIO, setup PWM on GPIO pins
-        pass
+        """Initialize hardware GPIO and PWM using gpiozero."""
+        try:
+            from gpiozero import PWMLED, DigitalOutputDevice
+            
+            # Motor A (Left) - Standard pinning
+            self.motor_a_in1 = DigitalOutputDevice(self.MOTOR_A_IN1)
+            self.motor_a_in2 = DigitalOutputDevice(self.MOTOR_A_IN2)
+            self.motor_a_pwm = PWMLED(self.MOTOR_A_PWM)
+            
+            # Motor B (Right) - Reversed pinning
+            self.motor_b_in3 = DigitalOutputDevice(self.MOTOR_B_IN3)
+            self.motor_b_in4 = DigitalOutputDevice(self.MOTOR_B_IN4)
+            self.motor_b_pwm = PWMLED(self.MOTOR_B_PWM)
+            
+            logger.info(
+                f"GPIO initialized: "
+                f"Motor A (in1={self.MOTOR_A_IN1}, in2={self.MOTOR_A_IN2}, pwm={self.MOTOR_A_PWM}), "
+                f"Motor B (in3={self.MOTOR_B_IN3}, in4={self.MOTOR_B_IN4}, pwm={self.MOTOR_B_PWM})"
+            )
+        except ImportError:
+            logger.error("gpiozero library not available - cannot run in hardware mode")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to initialize GPIO hardware: {e}")
+            raise
     
     def set_speed(self, left_pwm: float, right_pwm: float) -> None:
         """
@@ -65,9 +109,37 @@ class MotorController:
             self._write_hardware(left_pwm, right_pwm)
     
     def _write_hardware(self, left_pwm: float, right_pwm: float) -> None:
-        """Write PWM values to hardware (stub implementation)."""
-        # TODO: Implement actual GPIO PWM write here
-        # Example: self.left_motor.ChangeDutyCycle(left_pwm * 100)
+        """Write PWM values to hardware GPIO."""
+        try:
+            # Motor A (Left) - Standard pinning
+            if left_pwm >= 0:
+                # Forward
+                self.motor_a_in1.on()
+                self.motor_a_in2.off()
+            else:
+                # Backward
+                self.motor_a_in1.off()
+                self.motor_a_in2.on()
+            self.motor_a_pwm.value = abs(left_pwm)
+            
+            # Motor B (Right) - REVERSED PINNING
+            # When right_pwm >= 0 (forward), we set in3=OFF, in4=ON (inverted!)
+            # When right_pwm < 0 (backward), we set in3=ON, in4=OFF (inverted!)
+            if right_pwm >= 0:
+                # Forward - but pins are inverted
+                self.motor_b_in3.off()
+                self.motor_b_in4.on()
+            else:
+                # Backward - but pins are inverted
+                self.motor_b_in3.on()
+                self.motor_b_in4.off()
+            self.motor_b_pwm.value = abs(right_pwm)
+            
+            logger.debug(f"GPIO write: Motor A in1={self.motor_a_in1.is_lit}, in2={self.motor_a_in2.is_lit}, pwm={abs(left_pwm):.2f} | "
+                        f"Motor B in3={self.motor_b_in3.is_lit}, in4={self.motor_b_in4.is_lit}, pwm={abs(right_pwm):.2f}")
+        except Exception as e:
+            logger.error(f"Error writing to GPIO: {e}")
+            raise
         pass
     
     def stop(self) -> None:
@@ -88,9 +160,23 @@ class MotorController:
         logger.info("Motor controller closed")
     
     def _close_hardware(self) -> None:
-        """Close hardware resources (stub implementation)."""
-        # TODO: Implement GPIO cleanup here
-        pass
+        """Close hardware resources and cleanup GPIO."""
+        try:
+            if self.motor_a_pwm:
+                self.motor_a_pwm.close()
+            if self.motor_b_pwm:
+                self.motor_b_pwm.close()
+            if self.motor_a_in1:
+                self.motor_a_in1.close()
+            if self.motor_a_in2:
+                self.motor_a_in2.close()
+            if self.motor_b_in3:
+                self.motor_b_in3.close()
+            if self.motor_b_in4:
+                self.motor_b_in4.close()
+            logger.info("GPIO resources closed")
+        except Exception as e:
+            logger.error(f"Error closing GPIO: {e}")
     
     def get_status(self) -> dict:
         """Get current motor status."""
