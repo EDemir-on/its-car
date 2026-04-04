@@ -11,14 +11,15 @@ motorA_pwm = PWMLED(12)  # ENA
 motorB_pwm = PWMLED(13)  # ENB
 
 motorA_in1.on()
-motorA_in2.off()
+motorA_in2.on()
 motorA_pwm.value=1.0
-sleep(10)
-
-motorA_in1.off()
-motorA_in2.off()
-motorA_pwm.value=1.0
+motorA_pwm.value=0.5
 sleep(5)
+
+# motorA_in1.off()
+# motorA_in2.off()
+# motorA_pwm.value=1.0
+# sleep(5)
 
 motorA_pwm.value = 0
 motorB_pwm.value = 0
