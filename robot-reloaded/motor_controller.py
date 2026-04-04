@@ -135,8 +135,8 @@ class MotorController:
                 self.motor_b_in4.off()
             self.motor_b_pwm.value = abs(right_pwm)
             
-            logger.debug(f"GPIO write: Motor A in1={self.motor_a_in1.is_lit}, in2={self.motor_a_in2.is_lit}, pwm={abs(left_pwm):.2f} | "
-                        f"Motor B in3={self.motor_b_in3.is_lit}, in4={self.motor_b_in4.is_lit}, pwm={abs(right_pwm):.2f}")
+            logger.debug(f"GPIO write: Motor A in1={self.motor_a_in1.is_active}, in2={self.motor_a_in2.is_active}, pwm={abs(left_pwm):.2f} | "
+                        f"Motor B in3={self.motor_b_in3.is_active}, in4={self.motor_b_in4.is_active}, pwm={abs(right_pwm):.2f}")
         except Exception as e:
             logger.error(f"Error writing to GPIO: {e}")
             raise
