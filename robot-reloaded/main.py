@@ -165,7 +165,7 @@ def main():
         
         # Initialize motor controller (mock mode)
         logger.info("Initializing motor controller (mock mode)...")
-        motor_controller = MotorController(use_mock=True)
+        motor_controller = MotorController(use_mock=False)  # Enable real GPIO
         
         # Initialize robot movement system
         logger.info("Initializing robot movement system...")
